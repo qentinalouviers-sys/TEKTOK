@@ -1,0 +1,6 @@
+{
+  "name": "ClipViral AI",
+  "description": "Ajoutez vos vidéastes favoris, explorez leurs vidéos et générez des clips TikTok à forte rétention découpés en 9:16 avec Remotion et Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

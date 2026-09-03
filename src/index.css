@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #050507;
+    color: #e2e2e7;
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+  }
+
+  /* Custom subtle scrollbar for Immersive UI */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #050507;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(139, 92, 246, 0.4);
+  }
+}
