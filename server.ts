@@ -1735,7 +1735,7 @@ app.post("/api/generate-voiceover", async (req, res) => {
         text: cleanScript,
         stream: false,
         voice_setting: {
-          voice_id: "French_Caring_Lady",
+          voice_id: "Friendly_Person",
           speed: 1.1,
           vol: 1,
           pitch: 0,
