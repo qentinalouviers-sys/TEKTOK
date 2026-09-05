@@ -1679,8 +1679,10 @@ export const RemotionRoot = () => {
                       {copiedClipLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <LinkIcon className="w-3.5 h-3.5" />}
                       {copiedClipLink ? "Lien direct copié !" : "Copier le lien direct du clip"}
                     </button>
+                  )}
 
                   {/* ── PUBLIER SUR LES RÉSEAUX ── */}
+                  {serverDownloadUrl && (
                   <PublishPanel
                     clipId={serverDownloadUrl?.match(/id=([^&]+)/)?.[1] || ""}
                     filename={exportedFileName}
