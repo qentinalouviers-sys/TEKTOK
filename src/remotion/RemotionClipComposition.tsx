@@ -4,6 +4,7 @@ import {
   spring,
   useCurrentFrame,
   useVideoConfig,
+  Video,
 } from "remotion";
 import { ViralClip, VideoItem } from "../types";
 
@@ -199,12 +200,8 @@ export const RemotionClipComposition: React.FC<RemotionClipProps> = ({
         }}
       >
         {sourceVideoUrl ? (
-          <video
+          <Video
             src={sourceVideoUrl}
-            autoPlay
-            loop
-            muted
-            playsInline
             style={{
               width: "100%",
               height: "100%",

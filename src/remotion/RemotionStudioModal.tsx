@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Player, PlayerRef } from "@remotion/player";
 import {
   X,
@@ -64,6 +64,10 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
   const [showDownloadTools, setShowDownloadTools] = useState(false);
   const [copiedYtDlp, setCopiedYtDlp] = useState(false);
 
+  // Auto-load state
+  const [isLoadingVideo, setIsLoadingVideo] = useState(false);
+  const [autoLoadError, setAutoLoadError] = useState<string | null>(null);
+
   // Duration when generating motion graphic without file
   const [motionDuration, setMotionDuration] = useState<10 | 15 | 30>(10);
 
@@ -80,6 +84,53 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
   const [exportedFileName, setExportedFileName] = useState<string>("");
   const [copiedClipLink, setCopiedClipLink] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+
+  // Auto-fetch YouTube video on mount if valid YouTube ID
+  useEffect(() => {
+    if (!isOpen || !clip || !video) return;
+
+    // Only real YouTube IDs (11 chars, not prefixed with v_ or b_)
+    const isRealYouTubeId =
+      video.id &&
+      /^[a-zA-Z0-9_-]{11}$/.test(video.id) &&
+      !video.id.startsWith("v_") &&
+      !video.id.startsWith("b_");
+
+    if (!isRealYouTubeId) return;
+    if (sourceVideoUrl) return; // already loaded
+
+    const startSec = Math.max(0, (clip.startSeconds || 0) - 5);
+    const endSec = (clip.endSeconds || clip.startSeconds + clip.durationSeconds || 30) + 5;
+
+    const controller = new AbortController();
+
+    (async () => {
+      setIsLoadingVideo(true);
+      setAutoLoadError(null);
+      try {
+        const resp = await fetch(
+          `/api/fetch-video?videoId=${encodeURIComponent(video.id)}&startSeconds=${startSec}&endSeconds=${endSec}`,
+          { signal: controller.signal }
+        );
+        const data = await resp.json();
+        if (data.fallback || data.error) {
+          setAutoLoadError("YouTube indisponible côté serveur — uploadez le fichier manuellement.");
+        } else if (data.url) {
+          setSourceVideoUrl(data.url);
+          setAutoLoadError(null);
+        }
+      } catch (err: any) {
+        if (err?.name !== "AbortError") {
+          setAutoLoadError("Erreur lors du chargement automatique de la vidéo.");
+        }
+      } finally {
+        setIsLoadingVideo(false);
+      }
+    })();
+
+    return () => controller.abort();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, clip?.id, video?.id]);
 
   // Robust helper to trigger immediate browser downloads
   const triggerDownload = (blobUrl: string, serverUrl?: string | null, filename?: string) => {
@@ -839,6 +890,29 @@ export const RemotionRoot = () => {
                 </button>
               </div>
             )}
+
+            {!sourceVideoFile && sourceVideoUrl && !isLoadingVideo && (
+              <div className="mt-3 w-[280px] sm:w-[320px] p-2 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-[11px] text-emerald-300 flex items-center justify-between">
+                <span className="truncate max-w-[220px]">✓ Vidéo YouTube chargée automatiquement</span>
+                <button
+                  onClick={() => { setSourceVideoUrl(null); setAutoLoadError(null); }}
+                  className="text-red-400 hover:text-red-300 p-1"
+                  title="Retirer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {isLoadingVideo && (
+              <div className="mt-3 w-[280px] sm:w-[320px] p-2 rounded-lg bg-slate-900/60 border border-cyan-500/30 text-[11px] text-cyan-300 flex items-center gap-2">
+                <svg className="animate-spin w-3.5 h-3.5 text-cyan-400 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                </svg>
+                <span>Chargement YouTube en cours...</span>
+              </div>
+            )}
           </div>
 
           {/* RIGHT: REMOTION CUSTOMIZER & EXPORT CONTROLS */}
@@ -894,8 +968,10 @@ export const RemotionRoot = () => {
                 className={`border-2 border-dashed rounded-xl p-3.5 text-center transition ${
                   isDragOver
                     ? "border-cyan-400 bg-cyan-950/20"
-                    : sourceVideoFile
+                    : sourceVideoFile || (sourceVideoUrl && !autoLoadError)
                     ? "border-emerald-500/50 bg-emerald-950/20"
+                    : autoLoadError
+                    ? "border-amber-500/40 bg-amber-950/10"
                     : "border-slate-700 hover:border-slate-600 bg-slate-950/40"
                 }`}
               >
@@ -927,6 +1003,69 @@ export const RemotionRoot = () => {
                     >
                       Changer
                     </button>
+                  </div>
+                ) : isLoadingVideo ? (
+                  <div className="flex flex-col items-center justify-center gap-2 py-2">
+                    <div className="flex items-center gap-2 text-cyan-300">
+                      <svg className="animate-spin w-4 h-4 text-cyan-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                      </svg>
+                      <span className="text-xs font-semibold">⬇️ Chargement de la vidéo YouTube...</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400">Téléchargement de l'extrait {clip.startTime} ➔ {clip.endTime} en cours</p>
+                  </div>
+                ) : sourceVideoUrl && !sourceVideoFile ? (
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3 text-left">
+                      <div className="w-9 h-9 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                        <FileVideo className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold text-emerald-300">✓ Vidéo chargée automatiquement</p>
+                        <p className="text-[10px] text-slate-400">
+                          Extrait {clip.startTime} ➔ {clip.endTime} prêt pour l'éditeur
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { setSourceVideoUrl(null); setAutoLoadError(null); }}
+                      className="px-2.5 py-1 text-xs text-red-400 hover:bg-red-950/40 border border-red-500/30 rounded-lg transition"
+                    >
+                      Changer
+                    </button>
+                  </div>
+                ) : autoLoadError ? (
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+                    <div className="text-left flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center shrink-0">
+                        <AlertCircle className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-amber-300">{autoLoadError}</p>
+                        <p className="text-[11px] text-slate-400">
+                          Glissez le fichier ou cliquez pour upload manuel
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 font-semibold rounded-lg border border-slate-700 transition"
+                      >
+                        Parcourir...
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleStartTabCapture}
+                        className="px-3 py-1.5 bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 text-xs font-semibold rounded-lg border border-purple-500/40 transition flex items-center gap-1"
+                        title="Capture l'audio et la vidéo de l'onglet YouTube en temps réel"
+                      >
+                        <Radio className="w-3 h-3 text-red-400 animate-pulse" />
+                        Capture Directe
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div className="flex flex-col sm:flex-row items-center justify-between gap-3">

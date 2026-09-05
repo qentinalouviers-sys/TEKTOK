@@ -1000,6 +1000,77 @@ app.get("/api/download-clip", async (req, res) => {
   }
 });
 
+// Auto-fetch YouTube video section for Remotion Studio preview (no manual upload needed)
+app.get("/api/fetch-video", async (req, res) => {
+  const videoId = ((req.query.videoId as string) || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  const startSec = Math.max(0, parseFloat((req.query.startSeconds as string) || "0"));
+  const endSec = Math.max(startSec + 3, parseFloat((req.query.endSeconds as string) || "120"));
+
+  if (!videoId || videoId.length !== 11) {
+    return res.status(400).json({ error: "Invalid videoId" });
+  }
+
+  const uniqueId = crypto.randomBytes(8).toString("hex");
+  const outputPath = path.join(EXPORT_CLIPS_DIR, `fetchvid_${uniqueId}.mp4`);
+  const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+  // Check for cookies (same pattern as /api/render-clip)
+  let youtubeCookieFile: string | null = null;
+  if (process.env.YOUTUBE_COOKIES_PATH && fs.existsSync(process.env.YOUTUBE_COOKIES_PATH)) {
+    youtubeCookieFile = process.env.YOUTUBE_COOKIES_PATH;
+  } else if (fs.existsSync(path.join(process.cwd(), "cookies.txt"))) {
+    youtubeCookieFile = path.join(process.cwd(), "cookies.txt");
+  } else if (process.env.YOUTUBE_COOKIES) {
+    const cookiePath = path.join(os.tmpdir(), `yt_cookie_fv_${uniqueId}.txt`);
+    try {
+      await fs.promises.writeFile(cookiePath, process.env.YOUTUBE_COOKIES, "utf8");
+      youtubeCookieFile = cookiePath;
+    } catch {}
+  }
+
+  const startFormatted = String(Math.floor(Math.max(0, startSec)));
+  const endFormatted = String(Math.ceil(endSec));
+
+  const ytdlpArgs = [
+    "--download-sections",
+    `*${startFormatted}-${endFormatted}`,
+    "--force-keyframes-at-cuts",
+    "--socket-timeout",
+    "8",
+    "-f",
+    "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+    "--merge-output-format",
+    "mp4",
+    ...(youtubeCookieFile ? ["--cookies", youtubeCookieFile] : []),
+    "-o",
+    outputPath,
+    youtubeUrl,
+  ];
+
+  try {
+    console.log(`[FetchVideo] Downloading section ${startFormatted}s-${endFormatted}s of ${videoId}...`);
+    await Promise.race([
+      execFileAsync("yt-dlp", ytdlpArgs),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("yt-dlp timeout after 60s")), 60000)
+      ),
+    ]);
+
+    const stat = await fs.promises.stat(outputPath).catch(() => null);
+    if (!stat || stat.size < 1000) {
+      console.warn(`[FetchVideo] Output too small or missing for ${videoId}`);
+      return res.status(200).json({ error: "unavailable", fallback: true });
+    }
+
+    const downloadUrl = `/api/download-clip?id=fetchvid_${uniqueId}&filename=preview_${videoId}.mp4&inline=true`;
+    console.log(`[FetchVideo] Success for ${videoId}: ${(stat.size / (1024 * 1024)).toFixed(1)}MB`);
+    return res.status(200).json({ url: downloadUrl, id: `fetchvid_${uniqueId}` });
+  } catch (err: any) {
+    console.warn(`[FetchVideo] yt-dlp failed for ${videoId}:`, err?.message || err);
+    return res.status(200).json({ error: "unavailable", fallback: true });
+  }
+});
+
 // Video format conversion pipeline (WebM -> MP4 / GIF) using FFmpeg
 app.post(
   "/api/convert-video",
