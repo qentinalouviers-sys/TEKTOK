@@ -71,6 +71,20 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
   // Duration when generating motion graphic without file
   const [motionDuration, setMotionDuration] = useState<10 | 15 | 30>(10);
 
+  // Viadeo mode state
+  const [showViadeoMode, setShowViadeoMode] = useState(false);
+  const [viadeoSubtitles, setViadeoSubtitles] = useState<{start:number,end:number,text:string}[]>([]);
+  const [viadeoVoiceoverUrl, setViadeoVoiceoverUrl] = useState<string | undefined>(undefined);
+  const [brollSegments, setBrollSegments] = useState<{clipPath:string,insertAt:number,duration:number}[]>([]);
+  const [brollKeywords, setBrollKeywords] = useState<string[]>([]);
+  const [brollClips, setBrollClips] = useState<{url:string,duration:number,keyword:string,thumbnail?:string}[]>([]);
+  const [isGeneratingVoiceover, setIsGeneratingVoiceover] = useState(false);
+  const [voiceoverScript, setVoiceoverScript] = useState<string>("");
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isFetchingBrollKeywords, setIsFetchingBrollKeywords] = useState(false);
+  const [isFetchingBroll, setIsFetchingBroll] = useState(false);
+  const [viadeoError, setViadeoError] = useState<string | null>(null);
+
   // Export / Copy state
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
@@ -877,6 +891,11 @@ export const RemotionRoot = () => {
                   showCaptions,
                   layoutMode,
                   sourceVideoUrl: sourceVideoUrl || undefined,
+                  showViadeoMode,
+                  subtitles: viadeoSubtitles,
+                  punches: [],
+                  brollSegments,
+                  voiceoverUrl: viadeoVoiceoverUrl,
                 }}
               />
             </div>
@@ -1183,6 +1202,192 @@ export const RemotionRoot = () => {
               <p className="text-[11px] text-slate-400 mt-1">
                 Ce texte s'affiche avec animation rebondissante Remotion pour capter le spectateur dès la 1ère seconde.
               </p>
+            </div>
+
+            {/* VIADEO MODE PANEL */}
+            <div className="bg-slate-900/60 border border-orange-800/40 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                  <span style={{color:'#E8923C'}}>🎬</span>
+                  Mode Viadeo
+                  <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold" style={{backgroundColor:'#E8923C22',color:'#E8923C',border:'1px solid #E8923C55'}}>
+                    VIADEO
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowViadeoMode(!showViadeoMode)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${showViadeoMode ? 'bg-orange-500' : 'bg-slate-700'}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${showViadeoMode ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+              </div>
+
+              {showViadeoMode && (
+                <div className="space-y-3">
+                  {viadeoError && (
+                    <div className="text-[11px] text-red-400 bg-red-950/40 border border-red-500/30 rounded-lg px-3 py-2">{viadeoError}</div>
+                  )}
+
+                  {/* VOICEOVER GENERATION */}
+                  <div className="bg-slate-950/60 rounded-lg p-3">
+                    <div className="text-[11px] font-bold text-orange-300 mb-2 flex items-center gap-1">
+                      <Radio className="w-3 h-3" /> Voix-off automatique (MiniMax TTS)
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isGeneratingVoiceover}
+                      onClick={async () => {
+                        setIsGeneratingVoiceover(true);
+                        setViadeoError(null);
+                        try {
+                          const res = await fetch('/api/generate-voiceover', {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify({
+                              hookText: clip.suggestedTextOverlay || '',
+                              clipTitle: clip.clipTitle,
+                              channelName,
+                              durationSeconds: clip.durationSeconds,
+                            }),
+                          });
+                          const data = await res.json();
+                          if (data.error) throw new Error(data.error);
+                          setViadeoVoiceoverUrl(data.audioUrl);
+                          setVoiceoverScript(data.script || '');
+                        } catch(e:any) {
+                          setViadeoError('Voiceover: ' + (e?.message || 'Erreur'));
+                        } finally {
+                          setIsGeneratingVoiceover(false);
+                        }
+                      }}
+                      className="w-full py-2 px-3 rounded-lg text-xs font-bold transition bg-orange-600/20 text-orange-300 border border-orange-600/40 hover:bg-orange-600/30 disabled:opacity-50"
+                    >
+                      {isGeneratingVoiceover ? '⏳ Génération en cours...' : '🎤 Générer voix-off'}
+                    </button>
+                    {voiceoverScript && (
+                      <p className="text-[10px] text-slate-400 mt-2 italic">"{voiceoverScript}"</p>
+                    )}
+                    {viadeoVoiceoverUrl && (
+                      <div className="text-[10px] text-emerald-400 mt-1">✓ Voix-off prête</div>
+                    )}
+                  </div>
+
+                  {/* SUBTITLES AUTO-TRANSCRIPTION */}
+                  <div className="bg-slate-950/60 rounded-lg p-3">
+                    <div className="text-[11px] font-bold text-orange-300 mb-2 flex items-center gap-1">
+                      <Layers className="w-3 h-3" /> Sous-titres automatiques
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isTranscribing}
+                      onClick={async () => {
+                        setIsTranscribing(true);
+                        setViadeoError(null);
+                        try {
+                          const res = await fetch(`/api/transcribe?videoId=${encodeURIComponent(video.id)}&startSeconds=${clip.startSeconds}&endSeconds=${clip.endSeconds || clip.startSeconds + clip.durationSeconds}`);
+                          const data = await res.json();
+                          if (data.error) throw new Error(data.error);
+                          setViadeoSubtitles(data.segments || []);
+                        } catch(e:any) {
+                          setViadeoError('Transcription: ' + (e?.message || 'Erreur'));
+                        } finally {
+                          setIsTranscribing(false);
+                        }
+                      }}
+                      className="w-full py-2 px-3 rounded-lg text-xs font-bold transition bg-orange-600/20 text-orange-300 border border-orange-600/40 hover:bg-orange-600/30 disabled:opacity-50"
+                    >
+                      {isTranscribing ? '⏳ Transcription...' : '📝 Transcrire les sous-titres'}
+                    </button>
+                    {viadeoSubtitles.length > 0 && (
+                      <div className="text-[10px] text-emerald-400 mt-1">✓ {viadeoSubtitles.length} segments chargés</div>
+                    )}
+                  </div>
+
+                  {/* B-ROLL */}
+                  <div className="bg-slate-950/60 rounded-lg p-3">
+                    <div className="text-[11px] font-bold text-orange-300 mb-2 flex items-center gap-1">
+                      <Film className="w-3 h-3" /> B-roll automatique
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isFetchingBrollKeywords}
+                      onClick={async () => {
+                        setIsFetchingBrollKeywords(true);
+                        setViadeoError(null);
+                        try {
+                          const res = await fetch('/api/broll-keywords', {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify({clipTitle: clip.clipTitle, channelName}),
+                          });
+                          const data = await res.json();
+                          if (data.error) throw new Error(data.error);
+                          setBrollKeywords(data.keywords || []);
+                        } catch(e:any) {
+                          setViadeoError('B-roll keywords: ' + (e?.message || 'Erreur'));
+                        } finally {
+                          setIsFetchingBrollKeywords(false);
+                        }
+                      }}
+                      className="w-full py-2 px-3 rounded-lg text-xs font-bold transition bg-orange-600/20 text-orange-300 border border-orange-600/40 hover:bg-orange-600/30 disabled:opacity-50 mb-2"
+                    >
+                      {isFetchingBrollKeywords ? '⏳ Analyse...' : '🔍 Suggérer mots-clés B-roll'}
+                    </button>
+                    {brollKeywords.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mb-2">
+                        {brollKeywords.map((kw, i) => (
+                          <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">{kw}</span>
+                        ))}
+                      </div>
+                    )}
+                    {brollKeywords.length > 0 && (
+                      <button
+                        type="button"
+                        disabled={isFetchingBroll}
+                        onClick={async () => {
+                          setIsFetchingBroll(true);
+                          setViadeoError(null);
+                          try {
+                            const res = await fetch('/api/broll', {
+                              method: 'POST',
+                              headers: {'Content-Type':'application/json'},
+                              body: JSON.stringify({keywords: brollKeywords, count: 3}),
+                            });
+                            const clips = await res.json();
+                            if (clips.error) throw new Error(clips.error);
+                            setBrollClips(clips);
+                            // Distribute evenly across clip duration
+                            const seg = clips.map((c: any, i: number) => ({
+                              clipPath: c.url,
+                              insertAt: (clip.durationSeconds / clips.length) * i + 2,
+                              duration: Math.min(c.duration || 5, 8),
+                            }));
+                            setBrollSegments(seg);
+                          } catch(e:any) {
+                            setViadeoError('B-roll: ' + (e?.message || 'Erreur'));
+                          } finally {
+                            setIsFetchingBroll(false);
+                          }
+                        }}
+                        className="w-full py-2 px-3 rounded-lg text-xs font-bold transition bg-emerald-600/20 text-emerald-300 border border-emerald-600/40 hover:bg-emerald-600/30 disabled:opacity-50"
+                      >
+                        {isFetchingBroll ? '⏳ Téléchargement...' : '⬇️ Télécharger B-roll'}
+                      </button>
+                    )}
+                    {brollClips.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {brollClips.map((c, i) => (
+                          <div key={i} className="text-[10px] text-slate-400 flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+                            {c.keyword} ({c.duration}s)
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* SUBTITLE STYLES (HORMOZI, CYBER, MRBEAST, MINIMAL) */}

@@ -5,8 +5,14 @@ import {
   useCurrentFrame,
   useVideoConfig,
   Video,
+  Audio,
 } from "remotion";
 import { ViralClip, VideoItem } from "../types";
+import { SubtitleLayer } from "./viadeo/SubtitleLayer";
+import { PunchLayer } from "./viadeo/PunchLayer";
+import { BrollLayer } from "./viadeo/BrollLayer";
+import { Habillage } from "./viadeo/Habillage";
+import type { Subtitle, Punch, BrollSegment } from "./viadeo/schema";
 
 export interface RemotionClipProps {
   clip: ViralClip;
@@ -19,6 +25,12 @@ export interface RemotionClipProps {
   layoutMode?: "split-blur" | "scale-crop" | "cinematic";
   customCaptions?: string[];
   sourceVideoUrl?: string | null;
+  // Viadeo mode props
+  subtitles?: Subtitle[];
+  punches?: Punch[];
+  brollSegments?: BrollSegment[];
+  voiceoverUrl?: string;
+  showViadeoMode?: boolean;
 }
 
 export const RemotionClipComposition: React.FC<RemotionClipProps> = ({
@@ -31,6 +43,11 @@ export const RemotionClipComposition: React.FC<RemotionClipProps> = ({
   showCaptions = true,
   layoutMode = "split-blur",
   sourceVideoUrl = null,
+  subtitles = [],
+  punches = [],
+  brollSegments = [],
+  voiceoverUrl,
+  showViadeoMode = false,
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames, width, height } = useVideoConfig();
@@ -129,6 +146,13 @@ export const RemotionClipComposition: React.FC<RemotionClipProps> = ({
 
   // Generate reactive sound bars
   const barCount = 18;
+
+  // Today's date for Viadeo habillage
+  const today = new Date().toLocaleDateString("fr-FR", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
 
   return (
     <div
@@ -473,6 +497,37 @@ export const RemotionClipComposition: React.FC<RemotionClipProps> = ({
       >
         Généré avec Remotion Engine • 1080x1920 (9:16)
       </div>
+
+      {/* ===== VIADEO MODE OVERLAYS ===== */}
+      {showViadeoMode && (
+        <>
+          {/* B-roll overlay segments */}
+          {brollSegments.length > 0 && (
+            <BrollLayer segments={brollSegments} fps={fps} />
+          )}
+
+          {/* Animated spring subtitles */}
+          {subtitles.length > 0 && (
+            <SubtitleLayer subtitles={subtitles} />
+          )}
+
+          {/* Punch keyword full-screen moments */}
+          {punches.length > 0 && (
+            <PunchLayer punches={punches} fps={fps} />
+          )}
+
+          {/* Viadeo badges habillage */}
+          <Habillage
+            badges={{ showBrand: true, showAI: true, showDate: true }}
+            date={today}
+          />
+        </>
+      )}
+
+      {/* VOICEOVER AUDIO */}
+      {voiceoverUrl && (
+        <Audio src={voiceoverUrl} />
+      )}
     </div>
   );
 };
