@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Send, Check, AlertCircle, Loader2 } from "lucide-react";
+import { Send, Check, AlertCircle, Loader2, ExternalLink } from "lucide-react";
 
 const PLATFORMS = [
   { id: "tiktok",    label: "TikTok",    emoji: "📱", color: "from-pink-600 to-red-600" },
@@ -7,13 +7,17 @@ const PLATFORMS = [
   { id: "youtube",   label: "YouTube",   emoji: "▶️",  color: "from-red-600 to-red-700" },
 ];
 
+// AutoSocial tourne en local sur le Windows de l'utilisateur
+const AUTOSOCIAL_URL = "http://localhost:3001";
+
 interface Props {
   clipId: string;
   filename: string;
   caption: string;
+  serverDownloadUrl?: string | null;
 }
 
-export const PublishPanel: React.FC<Props> = ({ clipId, filename, caption }) => {
+export const PublishPanel: React.FC<Props> = ({ clipId, filename, caption, serverDownloadUrl }) => {
   const [selected, setSelected] = useState<string[]>(["tiktok"]);
   const [editedCaption, setEditedCaption] = useState(caption);
   const [status, setStatus] = useState<"idle" | "loading" | "ok" | "error">("idle");
@@ -22,38 +26,52 @@ export const PublishPanel: React.FC<Props> = ({ clipId, filename, caption }) => 
   const toggle = (id: string) =>
     setSelected(prev => prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]);
 
+  // URL publique du clip sur le VPS
+  const publicClipUrl = serverDownloadUrl
+    ? `https://tektok.eviatek.fr${serverDownloadUrl}`
+    : null;
+
   const publish = async () => {
-    if (!clipId || selected.length === 0) return;
+    if (!publicClipUrl || selected.length === 0) return;
     setStatus("loading");
     setMessage("");
     try {
-      const res = await fetch("/api/publish-to-queue", {
+      // Appeler AutoSocial local
+      const res = await fetch(`${AUTOSOCIAL_URL}/api/queue-from-url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          clipId,
-          filename,
+          url: publicClipUrl,
           caption: editedCaption,
           platforms: selected,
+          filename: filename || `clip-${Date.now()}.mp4`,
         }),
       });
       const data = await res.json();
       if (data.ok) {
         setStatus("ok");
-        setMessage(`✓ Ajouté à la queue : ${data.pushed.join(", ")}`);
+        setMessage(`✓ En queue : ${data.pushed.join(", ")}`);
       } else {
-        throw new Error(data.error || "Erreur inconnue");
+        throw new Error(data.error || "Erreur AutoSocial");
       }
     } catch (e: any) {
-      setStatus("error");
-      setMessage(e?.message || "Erreur");
+      // AutoSocial local pas démarré
+      if (e?.message?.includes("Failed to fetch") || e?.message?.includes("NetworkError")) {
+        setStatus("error");
+        setMessage("AutoSocial n'est pas démarré — lance-le sur ton PC");
+      } else {
+        setStatus("error");
+        setMessage(e?.message || "Erreur");
+      }
     }
   };
 
+  if (!publicClipUrl) return null;
+
   return (
-    <div className="mt-3 p-3 rounded-xl bg-slate-950 border border-slate-700 flex flex-col gap-3">
-      <div className="text-[11px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-        <Send className="w-3 h-3 text-orange-400" />
+    <div className="mt-3 p-3 rounded-xl bg-slate-950 border border-orange-500/30 flex flex-col gap-3">
+      <div className="text-[11px] font-bold text-orange-300 uppercase tracking-wider flex items-center gap-1.5">
+        <Send className="w-3 h-3" />
         Publier sur les réseaux
       </div>
 
@@ -84,15 +102,15 @@ export const PublishPanel: React.FC<Props> = ({ clipId, filename, caption }) => 
         className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-[11px] text-white placeholder-slate-500 focus:outline-none focus:border-orange-500 resize-none"
       />
 
-      {/* Bouton */}
+      {/* Bouton publier */}
       <button
         type="button"
         onClick={publish}
-        disabled={status === "loading" || selected.length === 0 || !clipId}
+        disabled={status === "loading" || selected.length === 0}
         className="w-full py-2 rounded-lg text-xs font-bold bg-orange-600 hover:bg-orange-500 text-white flex items-center justify-center gap-2 transition disabled:opacity-50"
       >
         {status === "loading" ? (
-          <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Envoi en cours...</>
+          <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Envoi vers AutoSocial...</>
         ) : (
           <><Send className="w-3.5 h-3.5" /> Envoyer dans la queue</>
         )}
@@ -101,13 +119,22 @@ export const PublishPanel: React.FC<Props> = ({ clipId, filename, caption }) => 
       {/* Statut */}
       {status === "ok" && (
         <div className="flex items-center gap-1.5 text-[11px] text-emerald-400">
-          <Check className="w-3.5 h-3.5" /> {message}
-          <span className="text-slate-500 ml-1">— AutoSocial publiera au prochain cron</span>
+          <Check className="w-3.5 h-3.5" />
+          <span>{message} — AutoSocial publiera au prochain cron</span>
         </div>
       )}
       {status === "error" && (
-        <div className="flex items-center gap-1.5 text-[11px] text-red-400">
-          <AlertCircle className="w-3.5 h-3.5" /> {message}
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-1.5 text-[11px] text-red-400">
+            <AlertCircle className="w-3.5 h-3.5" />
+            <span>{message}</span>
+          </div>
+          {message.includes("AutoSocial") && (
+            <div className="text-[10px] text-slate-400 bg-slate-900 rounded px-2 py-1.5 font-mono">
+              cd C:/Users/qenti/Projects/autosocial<br/>
+              npm run dashboard
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -1687,6 +1687,7 @@ export const RemotionRoot = () => {
                     clipId={serverDownloadUrl?.match(/id=([^&]+)/)?.[1] || ""}
                     filename={exportedFileName}
                     caption={clip.tiktokCaption || ""}
+                    serverDownloadUrl={serverDownloadUrl}
                   />
                   )}
                 </div>
