@@ -2027,50 +2027,69 @@ app.post("/api/broll", async (req, res) => {
 });
 
 // ===== AUTO-SOCIAL QUEUE PUSH =====
-// Envoie un clip exporté dans la queue AutoSocial locale pour publication automatique
-const AUTOSOCIAL_BASE = process.env.AUTOSOCIAL_DIR || path.join(process.cwd(), "..", "autosocial");
+// ===== PUBLICATION QUEUE (pour AutoSocial local qui poll depuis Windows) =====
+// Le navigateur ne peut pas appeler localhost depuis https → on inverse :
+// TEKTOK stocke les demandes, AutoSocial poll GET /api/publish-pending et confirme via POST /api/publish-confirm
+const PUBLISH_QUEUE_FILE = path.join(EXPORT_CLIPS_DIR, "_publish_queue.json");
 
+async function loadPublishQueue(): Promise<any[]> {
+  try { return JSON.parse(await fs.promises.readFile(PUBLISH_QUEUE_FILE, "utf8")); } catch { return []; }
+}
+async function savePublishQueue(q: any[]) {
+  await fs.promises.writeFile(PUBLISH_QUEUE_FILE, JSON.stringify(q, null, 2), "utf8");
+}
+
+// POST /api/publish-to-queue — appelé par le navigateur depuis TEKTOK
 app.post("/api/publish-to-queue", async (req, res) => {
   try {
-    const { clipId, filename, caption, platforms } = req.body as {
-      clipId: string;
-      filename: string;
-      caption?: string;
-      platforms?: string[]; // ["tiktok","instagram","youtube"]
+    const { clipId, filename, caption, platforms, serverDownloadUrl } = req.body as any;
+    if (!clipId && !serverDownloadUrl) return res.status(400).json({ error: "clipId ou serverDownloadUrl requis" });
+
+    const publicUrl = serverDownloadUrl
+      ? `https://tektok.eviatek.fr${serverDownloadUrl}`
+      : null;
+
+    if (!publicUrl) return res.status(400).json({ error: "URL de téléchargement manquante" });
+
+    const entry = {
+      id: crypto.randomBytes(6).toString("hex"),
+      clipId,
+      filename: filename || `clip-${Date.now()}.mp4`,
+      caption: caption || "",
+      platforms: platforms || ["tiktok", "instagram", "youtube"],
+      url: publicUrl,
+      createdAt: new Date().toISOString(),
+      status: "pending",
     };
-    if (!clipId) return res.status(400).json({ error: "clipId requis" });
 
-    // Trouver le fichier source dans EXPORT_CLIPS_DIR
-    const files = await fs.promises.readdir(EXPORT_CLIPS_DIR);
-    const targetFile = files.find(f => f.startsWith(clipId) || f.includes(clipId));
-    if (!targetFile) return res.status(404).json({ error: "Clip introuvable ou expiré" });
+    const q = await loadPublishQueue();
+    q.push(entry);
+    await savePublishQueue(q);
 
-    const sourcePath = path.join(EXPORT_CLIPS_DIR, targetFile);
-    const targetPlatforms = platforms && platforms.length > 0 ? platforms : ["tiktok", "instagram", "youtube"];
-    const cleanFilename = (filename || targetFile).replace(/[^a-zA-Z0-9_.-]/g, "_");
-
-    const pushed: string[] = [];
-    for (const platform of targetPlatforms) {
-      const queueDir = path.join(AUTOSOCIAL_BASE, "queue", "default", platform, "pending");
-      await fs.promises.mkdir(queueDir, { recursive: true });
-
-      const destVideo = path.join(queueDir, cleanFilename);
-      await fs.promises.copyFile(sourcePath, destVideo);
-
-      // Écrire la légende dans un fichier .description
-      if (caption) {
-        const captionFile = destVideo.replace(/\.[^.]+$/, ".description");
-        await fs.promises.writeFile(captionFile, caption, "utf8");
-      }
-      pushed.push(platform);
-    }
-
-    console.log(`[AutoSocial] Clip ${cleanFilename} envoyé dans la queue: ${pushed.join(", ")}`);
-    return res.json({ ok: true, pushed, file: cleanFilename });
+    console.log(`[PublishQueue] Ajouté: ${entry.filename} → ${entry.platforms.join(", ")}`);
+    return res.json({ ok: true, id: entry.id, message: "AutoSocial va récupérer ce clip automatiquement" });
   } catch (err: any) {
-    console.error("[AutoSocial] Error:", err?.message);
-    res.status(500).json({ error: err?.message || "Erreur push queue" });
+    res.status(500).json({ error: err?.message });
   }
+});
+
+// GET /api/publish-pending — AutoSocial poll cet endpoint toutes les 30s
+app.get("/api/publish-pending", (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  loadPublishQueue().then(q => {
+    res.json(q.filter((e: any) => e.status === "pending"));
+  });
+});
+
+// POST /api/publish-confirm — AutoSocial confirme quand un clip est posté
+app.post("/api/publish-confirm", express.json(), (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  const { id, status } = req.body || {};
+  loadPublishQueue().then(async q => {
+    const entry = q.find((e: any) => e.id === id);
+    if (entry) { entry.status = status || "done"; await savePublishQueue(q); }
+    res.json({ ok: true });
+  });
 });
 
 async function startServer() {
