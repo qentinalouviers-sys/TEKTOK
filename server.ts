@@ -1037,6 +1037,10 @@ app.get("/api/fetch-video", async (req, res) => {
     "--force-keyframes-at-cuts",
     "--socket-timeout",
     "8",
+    "--extractor-args", "youtube:player_client=tv,web",
+    "--user-agent", "Mozilla/5.0 (TV; SmartTV) AppleWebKit/537.36",
+    "--no-check-certificates",
+    "--no-playlist",
     "-f",
     "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
     "--merge-output-format",
@@ -1049,12 +1053,47 @@ app.get("/api/fetch-video", async (req, res) => {
 
   try {
     console.log(`[FetchVideo] Downloading section ${startFormatted}s-${endFormatted}s of ${videoId}...`);
-    await Promise.race([
-      execFileAsync("yt-dlp", ytdlpArgs),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("yt-dlp timeout after 60s")), 60000)
-      ),
-    ]);
+
+    // Attempt 1: bestvideo+bestaudio
+    let fetchOk = false;
+    const attempt = async (extraArgs: string[]) => {
+      const args = [
+        "--download-sections", `*${startFormatted}-${endFormatted}`,
+        "--force-keyframes-at-cuts",
+        "--socket-timeout", "8",
+        "--extractor-args", "youtube:player_client=tv,web",
+        "--user-agent", "Mozilla/5.0 (TV; SmartTV) AppleWebKit/537.36",
+        "--no-check-certificates",
+        "--no-playlist",
+        ...extraArgs,
+        "--merge-output-format", "mp4",
+        ...(youtubeCookieFile ? ["--cookies", youtubeCookieFile] : []),
+        "-o", outputPath,
+        youtubeUrl,
+      ];
+      await execFileAsync("yt-dlp", args);
+    };
+
+    const formats = [
+      ["-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]"],
+      ["-f", "best"],
+      ["-f", "worst"],
+    ];
+
+    for (const fmtArgs of formats) {
+      try {
+        await Promise.race([
+          attempt(fmtArgs),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("yt-dlp timeout")), 90000)
+          ),
+        ]);
+        const stat2 = await fs.promises.stat(outputPath).catch(() => null);
+        if (stat2 && stat2.size >= 1000) { fetchOk = true; break; }
+      } catch (e: any) {
+        console.warn(`[FetchVideo] Attempt with ${fmtArgs[1]} failed: ${e?.message}`);
+      }
+    }
 
     const stat = await fs.promises.stat(outputPath).catch(() => null);
     if (!stat || stat.size < 1000) {
@@ -1430,6 +1469,10 @@ app.all("/api/render-clip", async (req, res) => {
           "--force-keyframes-at-cuts",
           "--socket-timeout",
           "4",
+          "--extractor-args", "youtube:player_client=tv,web",
+          "--user-agent", "Mozilla/5.0 (TV; SmartTV) AppleWebKit/537.36",
+          "--no-check-certificates",
+          "--no-playlist",
           "-f",
           "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
           "--merge-output-format",
@@ -1440,10 +1483,42 @@ app.all("/api/render-clip", async (req, res) => {
           youtubeTarget,
         ];
 
-        await Promise.race([
-          execFileAsync("yt-dlp", ytdlpArgs),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Extraction timeout")), 30000)),
-        ]);
+        const tryDownload = async (fmtArgs: string[]) => {
+          const args = [
+            "--download-sections", `*${startFormatted}-${endFormatted}`,
+            "--force-keyframes-at-cuts",
+            "--socket-timeout", "4",
+            "--extractor-args", "youtube:player_client=tv,web",
+            "--user-agent", "Mozilla/5.0 (TV; SmartTV) AppleWebKit/537.36",
+            "--no-check-certificates",
+            "--no-playlist",
+            ...fmtArgs,
+            "--merge-output-format", "mp4",
+            ...(youtubeCookieFile ? ["--cookies", youtubeCookieFile] : []),
+            "-o", tempDownloaded,
+            youtubeTarget,
+          ];
+          await execFileAsync("yt-dlp", args);
+        };
+
+        const renderFormats = [
+          ["-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]"],
+          ["-f", "best"],
+        ];
+        let dlOk = false;
+        for (const fmtArgs of renderFormats) {
+          try {
+            await Promise.race([
+              tryDownload(fmtArgs),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("Extraction timeout")), 30000)),
+            ]);
+            if (fs.existsSync(tempDownloaded) && (await fs.promises.stat(tempDownloaded)).size > 1000) {
+              dlOk = true; break;
+            }
+          } catch (e: any) {
+            console.warn(`[ClipRender] yt-dlp format ${fmtArgs[1]} failed: ${e?.message}`);
+          }
+        }
 
         if (fs.existsSync(tempDownloaded) && (await fs.promises.stat(tempDownloaded)).size > 1000) {
           downloadedVideo = true;
@@ -1543,9 +1618,9 @@ app.all("/api/render-clip", async (req, res) => {
         } catch {}
       }
 
-      const fontPath = "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf";
-      const hasFont = fs.existsSync(fontPath);
-      const fontParam = hasFont ? `:fontfile=${fontPath}` : "";
+      // DejaVu is installed via ttf-dejavu in Dockerfile; Alpine puts it here
+      const fontPath = "/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf";
+      const fontParam = `:fontfile=${fontPath}`;
 
       let subColor = "yellow";
       let subBox = "black@0.85";

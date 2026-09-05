@@ -118,6 +118,16 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
         } else if (data.url) {
           setSourceVideoUrl(data.url);
           setAutoLoadError(null);
+          // BUG 3 fix: also store as File so MODE 1 export pipeline works directly
+          try {
+            const blobResp = await fetch(data.url);
+            if (blobResp.ok) {
+              const blob = await blobResp.blob();
+              setSourceVideoFile(new File([blob], `yt_${video.id}.mp4`, { type: "video/mp4" }));
+            }
+          } catch {
+            // Non-fatal: export will fall back to MODE 2
+          }
         }
       } catch (err: any) {
         if (err?.name !== "AbortError") {
