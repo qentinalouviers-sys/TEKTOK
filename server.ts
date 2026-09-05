@@ -1039,8 +1039,8 @@ app.get("/api/fetch-video", async (req, res) => {
     const attempt = async (extraArgs: string[]) => {
       const args = [
         "--download-sections", `*${startFormatted}-${endFormatted}`,
-        "--force-keyframes-at-cuts",
-        "--socket-timeout", "8",
+        
+        "--socket-timeout", "30",
         "--extractor-args", "youtube:player_client=ios,web",
         "--no-check-certificates",
         "--no-playlist",
@@ -1446,7 +1446,7 @@ app.all("/api/render-clip", async (req, res) => {
         const ytdlpArgs = [
           "--download-sections",
           `*${startFormatted}-${endFormatted}`,
-          "--force-keyframes-at-cuts",
+          
           "--socket-timeout",
           "4",
           "--extractor-args", "youtube:player_client=tv,web",
@@ -1466,8 +1466,8 @@ app.all("/api/render-clip", async (req, res) => {
         const tryDownload = async (fmtArgs: string[]) => {
           const args = [
             "--download-sections", `*${startFormatted}-${endFormatted}`,
-            "--force-keyframes-at-cuts",
-            "--socket-timeout", "4",
+            
+            "--socket-timeout", "30",
             "--extractor-args", "youtube:player_client=ios,web",
             "--no-check-certificates",
             "--no-playlist",
