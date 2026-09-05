@@ -1291,8 +1291,10 @@ app.post(
       if (subtitlesData.length > 0 && targetFormat !== "gif") {
         assFile = path.join(os.tmpdir(), `subs_${uniqueId}.ass`);
         const assHeader = `[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,DejaVu Sans,72,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,0,0,1,5,2,2,60,60,280,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+        // Subtitles from /api/transcribe are ALREADY relative to clip start (0-based)
+        // Do NOT subtract safeSeek — timestamps start at 0 for the clip
         const toAssTime = (s: number) => {
-          const base = Math.max(0, s - safeSeek);
+          const base = Math.max(0, s);
           const h = Math.floor(base / 3600);
           const m = Math.floor((base % 3600) / 60);
           const sec = Math.floor(base % 60);
@@ -1300,8 +1302,8 @@ app.post(
           return `${h}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}.${String(cs).padStart(2,"0")}`;
         };
         const lines = subtitlesData
-          .filter(s => s.end > safeSeek && s.start < safeSeek + safeDuration)
-          .map(s => `Dialogue: 0,${toAssTime(s.start)},${toAssTime(s.end)},Default,,0,0,0,,${s.text.replace(/\n/g," ")}`)
+          .filter(s => s.start >= 0 && s.start < safeDuration)
+          .map(s => `Dialogue: 0,${toAssTime(s.start)},${toAssTime(Math.min(s.end, safeDuration))},Default,,0,0,0,,${s.text.replace(/\n/g," ")}`)
           .join("\n");
         await fs.promises.writeFile(assFile, assHeader + lines, "utf8");
       }
