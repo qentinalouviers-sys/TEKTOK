@@ -1339,10 +1339,10 @@ app.all("/api/render-clip", async (req, res) => {
       } catch {}
     }
 
-    // Only attempt yt-dlp if it's either a non-YouTube direct URL OR we have authenticated cookies.
-    // YouTube blocks unauthenticated datacenter/cloud IP ranges by design ("Sign in to confirm you're not a bot").
-    const shouldAttemptExtraction =
-      Boolean(youtubeTarget) && (!isRealYouTube || Boolean(youtubeCookieFile));
+    // Always attempt yt-dlp when a target URL is available.
+    // On a dedicated VPS with a residential/datacenter IP (OVH), YouTube works without cookies for most videos.
+    // If yt-dlp fails for any reason, we fall back to the Motion Graphic renderer gracefully.
+    const shouldAttemptExtraction = Boolean(youtubeTarget);
 
     if (shouldAttemptExtraction) {
       const tempDownloaded = path.join(os.tmpdir(), `yt_${uniqueId}.mp4`);
@@ -1371,7 +1371,7 @@ app.all("/api/render-clip", async (req, res) => {
 
         await Promise.race([
           execFileAsync("yt-dlp", ytdlpArgs),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Extraction timeout")), 4000)),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Extraction timeout")), 30000)),
         ]);
 
         if (fs.existsSync(tempDownloaded) && (await fs.promises.stat(tempDownloaded)).size > 1000) {
