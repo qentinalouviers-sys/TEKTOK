@@ -7,7 +7,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,51 +34,122 @@ function getGeminiClient() {
   });
 }
 
-// Resilient Gemini invoker with automatic model fallback & strict timeout
+// Sleep helper for backoff
+const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+function cleanJsonText(raw: string): string {
+  if (!raw) return "{}";
+  let cleaned = raw.trim();
+  if (cleaned.startsWith("```json")) {
+    cleaned = cleaned.slice(7);
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.slice(3);
+  }
+  if (cleaned.endsWith("```")) {
+    cleaned = cleaned.slice(0, -3);
+  }
+  return cleaned.trim();
+}
+
+function parseJsonSafe(raw: string): any {
+  try {
+    const cleaned = cleanJsonText(raw);
+    return JSON.parse(cleaned);
+  } catch {
+    try {
+      const relaxed = cleanJsonText(raw).replace(/,\s*([}\]])/g, "$1");
+      return JSON.parse(relaxed);
+    } catch {
+      return null;
+    }
+  }
+}
+
+// Resilient Gemini invoker with automatic model fallback, ThinkingLevel optimization & backoff
 async function callGeminiWithRetryAndFallback({
   prompt,
   schema,
+  timeoutMs = 25000,
 }: {
   prompt: string;
   schema?: any;
+  timeoutMs?: number;
 }) {
   const ai = getGeminiClient();
-  // Models ordered by verified availability and speed
-  const candidateModels = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"];
+
+  interface CandidateConfig {
+    model: string;
+    thinkingLevel?: ThinkingLevel;
+  }
+
+  // Ordered for peak availability and speed:
+  // 1. gemini-3.8-flash (primary recommended)
+  // 2. gemini-3.1-flash-lite (fast lightweight fallback with MINIMAL thinking)
+  // 3. gemini-flash-latest (general high-capacity fallback)
+  const candidateConfigs: CandidateConfig[] = [
+    { model: "gemini-3.8-flash", thinkingLevel: ThinkingLevel.LOW },
+    { model: "gemini-3.1-flash-lite", thinkingLevel: ThinkingLevel.MINIMAL },
+    { model: "gemini-flash-latest" },
+  ];
+
   let lastError: any = null;
 
-  for (const model of candidateModels) {
-    try {
-      console.log(`[Gemini] Requesting analysis with model ${model}...`);
-      const config: any = {};
-      if (schema) {
-        config.responseMimeType = "application/json";
-        config.responseSchema = schema;
+  for (const candidate of candidateConfigs) {
+    const { model, thinkingLevel } = candidate;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        console.log(`[Gemini] Requesting with ${model} (attempt ${attempt}/2)...`);
+        const config: any = {};
+        if (schema) {
+          config.responseMimeType = "application/json";
+          config.responseSchema = schema;
+        }
+
+        if (thinkingLevel !== undefined) {
+          config.thinkingConfig = { thinkingLevel };
+        }
+
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`Timeout model ${model}`)), timeoutMs)
+        );
+
+        const response: any = await Promise.race([
+          ai.models.generateContent({
+            model,
+            contents: prompt,
+            config,
+          }),
+          timeoutPromise,
+        ]);
+
+        if (response && response.text) {
+          console.log(`[Gemini] Successfully received response from ${model}`);
+          return { text: cleanJsonText(response.text), modelUsed: model };
+        }
+      } catch (err: any) {
+        lastError = err;
+        const errMsg = err?.message || String(err);
+        const is503OrUnavailable =
+          errMsg.includes("503") ||
+          errMsg.toLowerCase().includes("high demand") ||
+          errMsg.toLowerCase().includes("unavailable");
+
+        if (is503OrUnavailable) {
+          console.log(`[Gemini] Model ${model} is experiencing temporary high demand (503). Instantly failing over to alternate candidate...`);
+          // Do not wait or retry the same overloaded model, immediately move to the next candidate pool
+          break;
+        }
+
+        if (attempt === 1) {
+          console.log(`[Gemini] Model ${model} transient issue (${errMsg.slice(0, 80)}). Retrying once...`);
+          await sleep(500);
+          continue;
+        }
+
+        console.log(`[Gemini] Model ${model} failed after 2 attempts. Trying next candidate...`);
+        break;
       }
-
-      // 9-second safety timeout so user never gets stuck spinning
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Timeout Gemini model")), 9000)
-      );
-
-      const response: any = await Promise.race([
-        ai.models.generateContent({
-          model,
-          contents: prompt,
-          config,
-        }),
-        timeoutPromise,
-      ]);
-
-      if (response && response.text) {
-        console.log(`[Gemini] Successfully generated response with ${model}`);
-        return { text: response.text, modelUsed: model };
-      }
-    } catch (err: any) {
-      lastError = err;
-      const msg = (err?.message || "").toLowerCase();
-      console.log(`[Gemini] Model ${model} unavailable or timed out: ${msg}. Cascading...`);
-      continue;
     }
   }
 
@@ -393,6 +464,55 @@ const PRESET_CREATORS: YouTuberPreset[] = [
       },
     ],
   },
+  {
+    id: "amixem",
+    handle: "@Amixem",
+    name: "Amixem",
+    avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=160&h=160&fit=crop&crop=face",
+    subscribers: "8.6 M",
+    category: "Divertissement & Défis",
+    banner: "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=1200&h=300&fit=crop",
+    videos: [
+      {
+        id: "v_amx_1",
+        title: "ON TESTE DES OBJETS BIZARRES ACHETÉS EN LIGNE (ft. Thomas & Yvan)",
+        thumbnail: "https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?w=640&h=360&fit=crop",
+        publishedAt: "Il y a 3 jours",
+        views: "2.1M vues",
+        duration: "26:40",
+        description: "Des inventions improbables qui ont totalement dépassé nos attentes.",
+      },
+      {
+        id: "v_amx_2",
+        title: "LE PIRE CHANTIER DE NOTRE VIE (Rénovation Extrême)",
+        thumbnail: "https://images.unsplash.com/photo-1503387762-592deb58ef4e?w=640&h=360&fit=crop",
+        publishedAt: "Il y a 9 jours",
+        views: "1.8M vues",
+        duration: "32:15",
+        description: "Rien ne s'est passé comme prévu, mais le résultat final est spectaculaire.",
+      },
+    ],
+  },
+  {
+    id: "joyca",
+    handle: "@Joyca",
+    name: "Joyca",
+    avatar: "https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=160&h=160&fit=crop&crop=face",
+    subscribers: "6.1 M",
+    category: "Humour & Musique",
+    banner: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=1200&h=300&fit=crop",
+    videos: [
+      {
+        id: "v_jyc_1",
+        title: "JE CRÉE UN TUBE DE L'ÉTÉ EN 1 HEURE DANS MON STUDIO",
+        thumbnail: "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=640&h=360&fit=crop",
+        publishedAt: "Il y a 5 jours",
+        views: "1.5M vues",
+        duration: "21:05",
+        description: "Défi beatmaking avec des contraintes absurdes choisies par les abonnés.",
+      },
+    ],
+  },
 ];
 
 // Helper to extract YouTube video ID if provided
@@ -477,13 +597,16 @@ app.post("/api/creators/search", async (req, res) => {
   }
 
   const cleanQuery = query.trim();
+  const normalizedQuery = cleanQuery.toLowerCase().replace(/^@/, "");
 
-  // Check if matches preset
+  // Check if matches preset (by name, handle with/without @, or id)
   const existingPreset = PRESET_CREATORS.find(
     (c) =>
       c.handle.toLowerCase() === cleanQuery.toLowerCase() ||
+      c.handle.toLowerCase().replace(/^@/, "") === normalizedQuery ||
       c.name.toLowerCase() === cleanQuery.toLowerCase() ||
-      cleanQuery.toLowerCase().includes(c.id)
+      c.name.toLowerCase().includes(normalizedQuery) ||
+      normalizedQuery.includes(c.id.toLowerCase())
   );
 
   if (existingPreset) {
@@ -565,7 +688,7 @@ Retourne obligatoirement un JSON strict respectant la structure demandée.`;
       schema,
     });
 
-    const parsed = JSON.parse(text?.trim() || "{}");
+    const parsed = parseJsonSafe(text) || {};
     const creatorName = parsed.name || cleanQuery;
     const creatorHandle = parsed.handle?.startsWith("@") ? parsed.handle : `@${creatorName.replace(/\s+/g, "")}`;
 
@@ -577,6 +700,18 @@ Retourne obligatoirement un JSON strict respectant la structure demandée.`;
       "https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=640&h=360&fit=crop",
     ];
 
+    const videosList = Array.isArray(parsed.videos) && parsed.videos.length > 0
+      ? parsed.videos
+      : [
+          {
+            title: `La vidéo la plus virale de ${creatorName}`,
+            description: `Les moments les plus marquants et intenses de la chaîne ${creatorName}.`,
+            duration: "22:15",
+            publishedAt: "Récemment",
+            views: "1.4M vues",
+          },
+        ];
+
     const newCreator: YouTuberPreset = {
       id: `custom_${Date.now()}`,
       handle: creatorHandle,
@@ -585,7 +720,7 @@ Retourne obligatoirement un JSON strict respectant la structure demandée.`;
       subscribers: parsed.subscribers || "1.5 M",
       category: parsed.category || "Création & Divertissement",
       banner: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=1200&h=300&fit=crop",
-      videos: (parsed.videos || []).map((v: any, idx: number) => ({
+      videos: videosList.map((v: any, idx: number) => ({
         id: `gen_vid_${Date.now()}_${idx}`,
         title: v.title,
         thumbnail: stockThumbs[idx % stockThumbs.length],
@@ -598,7 +733,8 @@ Retourne obligatoirement un JSON strict respectant la structure demandée.`;
 
     res.json({ creator: newCreator });
   } catch (err: any) {
-    console.warn("Gemini search creator error (using graceful fallback):", err?.message || err);
+    const errMsg = err?.message || String(err);
+    console.log(`[Gemini] Creator search fallback engaged for "${cleanQuery}": ${errMsg.slice(0, 100)}`);
     // Graceful fallback to avoid blocking the user
     const fallbackCreator = generateFallbackCreator(cleanQuery);
     res.json({ creator: fallbackCreator });
@@ -739,10 +875,17 @@ Donne aussi un score global de potentiel viral pour cette vidéo et des conseils
       schema,
     });
 
-    const parsed = JSON.parse(text?.trim() || "{}");
+    const parsed = parseJsonSafe(text) || {};
+
+    if (!Array.isArray(parsed.clips) || parsed.clips.length === 0) {
+      console.log("[Gemini] Incomplete clips returned by model, applying adaptive viral generator");
+      const fallbackData = generateFallbackVideoAnalysis(videoId, videoTitle, channelName, description, duration);
+      res.json({ ...fallbackData, modelUsed });
+      return;
+    }
 
     // Add unique IDs to clips
-    const clipsWithId = (parsed.clips || []).map((clip: any, index: number) => ({
+    const clipsWithId = parsed.clips.map((clip: any, index: number) => ({
       ...clip,
       id: clip.id || `clip_${Date.now()}_${index + 1}`,
       durationSeconds: clip.durationSeconds || Math.max(15, (clip.endSeconds || 60) - (clip.startSeconds || 0)),
@@ -752,20 +895,108 @@ Donne aussi un score global de potentiel viral pour cette vidéo et des conseils
       videoId,
       videoTitle,
       channelName,
-      overallViralScore: parsed.overallViralScore || 92,
+      overallViralScore: parsed.overallViralScore || 94,
       viralSummary: parsed.viralSummary || "Une vidéo dotée d'une dynamique narrative idéale pour capter l'attention sur TikTok.",
       bestPostingTimes: parsed.bestPostingTimes || "En fin d'après-midi (17h30 - 20h30)",
       targetVibe: parsed.targetVibe || "Sons d'ambiance dynamiques avec risers de tension",
       clips: clipsWithId,
       analyzedAt: new Date().toISOString(),
-      modelUsed: modelUsed || "gemini-flash-latest",
+      modelUsed: modelUsed || "gemini-3.8-flash",
       isFallback: false,
     });
   } catch (err: any) {
-    console.log("[Gemini] Video analysis fallback generator activated:", err?.message || err);
+    const errMsg = err?.message || String(err);
+    console.log(`[Gemini] Video analysis fallback generator activated: ${errMsg.slice(0, 100)}`);
     // If Gemini is overloaded (503 UNAVAILABLE) or experiencing high demand, seamlessly generate high-grade viral analysis
     const fallbackData = generateFallbackVideoAnalysis(videoId, videoTitle, channelName, description, duration);
     res.json(fallbackData);
+  }
+});
+
+// Video format conversion & permanent clip storage pipeline
+const EXPORT_CLIPS_DIR = path.join(os.tmpdir(), "viral_clips_export");
+fs.mkdirSync(EXPORT_CLIPS_DIR, { recursive: true });
+
+// Auto-clean old export files older than 3 hours every 30 minutes
+setInterval(async () => {
+  try {
+    const files = await fs.promises.readdir(EXPORT_CLIPS_DIR);
+    const now = Date.now();
+    for (const file of files) {
+      const fullPath = path.join(EXPORT_CLIPS_DIR, file);
+      const stat = await fs.promises.stat(fullPath).catch(() => null);
+      if (stat && now - stat.mtimeMs > 3 * 3600 * 1000) {
+        await fs.promises.unlink(fullPath).catch(() => {});
+      }
+    }
+  } catch {}
+}, 30 * 60 * 1000);
+
+// Endpoint to download or stream exported clips reliably (supporting Range requests for smooth <video> player scrubbing and direct attachment downloads)
+app.get("/api/download-clip", async (req, res) => {
+  try {
+    const fileId = ((req.query.id as string) || "").replace(/[^a-zA-Z0-9_-]/g, "");
+    const rawFilename = (req.query.filename as string) || `clip-${fileId || Date.now()}`;
+    const cleanFilename = rawFilename.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const isInline = req.query.inline === "true" || req.query.inline === "1";
+
+    if (!fileId) {
+      return res.status(400).send("ID de clip manquant.");
+    }
+
+    const files = await fs.promises.readdir(EXPORT_CLIPS_DIR);
+    const targetFile = files.find((f) => f.startsWith(fileId));
+
+    if (!targetFile) {
+      return res.status(404).send("Ce clip a expiré ou n'a pas été trouvé. Veuillez relancer l'exportation.");
+    }
+
+    const fullPath = path.join(EXPORT_CLIPS_DIR, targetFile);
+    const stat = await fs.promises.stat(fullPath);
+    const ext = path.extname(targetFile).toLowerCase().replace(".", "");
+
+    const contentType =
+      ext === "gif" ? "image/gif" : ext === "webm" ? "video/webm" : "video/mp4";
+
+    const disposition = isInline
+      ? `inline; filename="${cleanFilename}"`
+      : `attachment; filename="${cleanFilename}"`;
+
+    // Handle Range Requests for HTML5 Video playback
+    const range = req.headers.range;
+    if (range && contentType.startsWith("video/")) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+      const chunkSize = end - start + 1;
+
+      res.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": chunkSize,
+        "Content-Type": contentType,
+        "Content-Disposition": disposition,
+        "Cache-Control": "public, max-age=3600",
+      });
+
+      const stream = fs.createReadStream(fullPath, { start, end });
+      stream.pipe(res);
+      return;
+    }
+
+    res.writeHead(200, {
+      "Content-Length": stat.size,
+      "Content-Type": contentType,
+      "Content-Disposition": disposition,
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "public, max-age=3600",
+    });
+
+    const stream = fs.createReadStream(fullPath);
+    stream.pipe(res);
+  } catch (err: any) {
+    console.error("[DownloadClip] Error serving clip:", err?.message || err);
+    res.status(500).send("Erreur serveur lors de la récupération du clip.");
   }
 });
 
@@ -789,7 +1020,7 @@ app.post(
 
     const uniqueId = crypto.randomBytes(8).toString("hex");
     const tempInput = path.join(os.tmpdir(), `input_${uniqueId}.webm`);
-    const tempOutput = path.join(os.tmpdir(), `output_${uniqueId}.${targetFormat}`);
+    const savedOutput = path.join(EXPORT_CLIPS_DIR, `${uniqueId}.${targetFormat}`);
 
     try {
       // Write uploaded stream to temp input file
@@ -797,7 +1028,7 @@ app.post(
 
       let ffmpegArgs: string[] = [];
       if (targetFormat === "mp4") {
-        // Universal H.264 MP4 with YUV420P profile and faststart for instant playback on iOS, Android, TikTok, Reels
+        // Universal H.264 MP4 with YUV420P profile, faststart, and AAC audio for instant playback
         ffmpegArgs = [
           "-y",
           "-i",
@@ -810,9 +1041,13 @@ app.post(
           "22",
           "-pix_fmt",
           "yuv420p",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "192k",
           "-movflags",
           "+faststart",
-          tempOutput,
+          savedOutput,
         ];
       } else if (targetFormat === "gif") {
         // High quality animated GIF with optimized 2-pass palette
@@ -822,7 +1057,7 @@ app.post(
           tempInput,
           "-vf",
           "fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
-          tempOutput,
+          savedOutput,
         ];
       } else {
         // Standard WebM
@@ -836,42 +1071,45 @@ app.post(
           "28",
           "-b:v",
           "0",
-          tempOutput,
+          savedOutput,
         ];
       }
 
-      console.log(`[FFmpeg] Converting ${tempInput} -> ${tempOutput} (${targetFormat})...`);
-      await execFileAsync("ffmpeg", ffmpegArgs);
+      console.log(`[FFmpeg] Converting ${tempInput} -> ${savedOutput} (${targetFormat})...`);
+      await execFileAsync("ffmpeg", ffmpegArgs, { maxBuffer: 100 * 1024 * 1024 });
 
-      const stat = await fs.promises.stat(tempOutput);
+      const stat = await fs.promises.stat(savedOutput);
       const mimeType =
-        targetFormat === "mp4"
-          ? "video/mp4"
-          : targetFormat === "gif"
+        targetFormat === "gif"
           ? "image/gif"
-          : "video/webm";
+          : targetFormat === "webm"
+          ? "video/webm"
+          : "video/mp4";
 
+      const downloadUrl = `/api/download-clip?id=${uniqueId}&filename=${encodeURIComponent(cleanFilename)}.${targetFormat}`;
       res.setHeader("Content-Type", mimeType);
       res.setHeader("Content-Length", stat.size);
       res.setHeader(
         "Content-Disposition",
         `attachment; filename="${cleanFilename}.${targetFormat}"`
       );
+      res.setHeader("X-Clip-Id", uniqueId);
+      res.setHeader("X-Clip-Url", downloadUrl);
+      res.setHeader("Access-Control-Expose-Headers", "X-Clip-Id, X-Clip-Url, Content-Disposition");
 
-      const stream = fs.createReadStream(tempOutput);
+      const stream = fs.createReadStream(savedOutput);
       stream.pipe(res);
 
       stream.on("close", async () => {
         try {
           await fs.promises.unlink(tempInput).catch(() => {});
-          await fs.promises.unlink(tempOutput).catch(() => {});
         } catch {}
       });
     } catch (err: any) {
       console.error("[FFmpeg] Conversion failed:", err?.message || err);
       try {
         await fs.promises.unlink(tempInput).catch(() => {});
-        await fs.promises.unlink(tempOutput).catch(() => {});
+        await fs.promises.unlink(savedOutput).catch(() => {});
       } catch {}
       res.status(500).json({
         error: "Erreur lors de la conversion vidéo FFmpeg.",
@@ -880,6 +1118,42 @@ app.post(
     }
   }
 );
+
+// Helper to parse timecodes like "01:14", "8:15", "00:02:30", or 74 into seconds
+function parseTimecodeToSeconds(tc: string | number | undefined): number {
+  if (tc === undefined || tc === null) return 0;
+  if (typeof tc === "number") return Math.max(0, tc);
+  const clean = String(tc).trim();
+  if (!clean) return 0;
+  if (/^\d+(\.\d+)?$/.test(clean)) return Math.max(0, parseFloat(clean));
+  const parts = clean.split(":").map((p) => parseFloat(p) || 0);
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+  return 0;
+}
+
+// Helper to probe video duration with ffprobe
+async function getVideoDuration(filePath: string): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      filePath,
+    ]);
+    const dur = parseFloat(stdout.trim());
+    return isNaN(dur) ? 0 : dur;
+  } catch {
+    return 0;
+  }
+}
 
 // Render clip from uploaded raw video file with timecode trim and 9:16 vertical formatting
 app.post(
@@ -893,83 +1167,421 @@ app.post(
     const targetFormat = rawFormat === "gif" ? "gif" : rawFormat === "webm" ? "webm" : "mp4";
     const rawFilename = (req.query.filename as string) || `clip-${Date.now()}`;
     const cleanFilename = rawFilename.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
-    const startTime = (req.query.startTime as string) || "0";
-    const duration = parseFloat((req.query.duration as string) || "30");
+    const rawStartTime = req.query.startTime as string;
+    const requestedDuration = Math.min(60, Math.max(3, parseFloat((req.query.duration as string) || "30")));
 
     const videoBuffer = req.body;
-    if (!videoBuffer || !Buffer.isBuffer(videoBuffer) || videoBuffer.length === 0) {
+    if (!videoBuffer || !Buffer.isBuffer(videoBuffer) || videoBuffer.length < 100) {
       return res.status(400).json({ error: "Aucun fichier vidéo valide reçu pour le découpage." });
     }
 
     const uniqueId = crypto.randomBytes(8).toString("hex");
     const tempInput = path.join(os.tmpdir(), `source_${uniqueId}.mp4`);
-    const tempOutput = path.join(os.tmpdir(), `clip_${uniqueId}.${targetFormat}`);
+    const savedOutput = path.join(EXPORT_CLIPS_DIR, `${uniqueId}.${targetFormat}`);
 
     try {
       await fs.promises.writeFile(tempInput, videoBuffer);
 
-      // FFmpeg command to seek, cut duration, and format to 9:16 (blurred backdrop + crisp center)
-      const ffmpegArgs = [
-        "-y",
-        "-ss",
-        startTime,
-        "-i",
-        tempInput,
-        "-t",
-        String(duration),
-        "-filter_complex",
-        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];[0:v]scale=1080:-1[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]",
-        "-map",
-        "[v]",
-        "-map",
-        "0:a?",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "22",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        tempOutput,
-      ];
+      const probeDuration = await getVideoDuration(tempInput);
+      const parsedStartSec = parseTimecodeToSeconds(rawStartTime);
+      
+      // Safe seek: if video is shorter than startTime, clamp to 0
+      const safeSeek = probeDuration > 0 && parsedStartSec >= probeDuration ? 0 : parsedStartSec;
+      const safeDuration = probeDuration > 0
+        ? Math.min(requestedDuration, Math.max(1, probeDuration - safeSeek))
+        : requestedDuration;
 
-      console.log(`[FFmpeg] Trimming & Rendering 9:16 clip (${startTime} -> ${duration}s) to ${tempOutput}...`);
-      await execFileAsync("ffmpeg", ffmpegArgs);
+      let ffmpegArgs: string[] = [];
+      if (targetFormat === "gif") {
+        ffmpegArgs = [
+          "-y",
+          "-ss",
+          String(safeSeek),
+          "-i",
+          tempInput,
+          "-t",
+          String(safeDuration),
+          "-filter_complex",
+          "[0:v]scale=540:960:force_original_aspect_ratio=increase,crop=540:960,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer",
+          savedOutput,
+        ];
+      } else {
+        ffmpegArgs = [
+          "-y",
+          "-ss",
+          String(safeSeek),
+          "-i",
+          tempInput,
+          "-t",
+          String(safeDuration),
+          "-filter_complex",
+          "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];[0:v]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]",
+          "-map",
+          "[v]",
+          "-map",
+          "0:a?",
+          "-c:v",
+          targetFormat === "webm" ? "libvpx-vp9" : "libx264",
+          ...(targetFormat === "webm"
+            ? ["-crf", "30", "-b:v", "0", "-c:a", "libopus"]
+            : [
+                "-preset",
+                "veryfast",
+                "-crf",
+                "22",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+              ]),
+          savedOutput,
+        ];
+      }
 
-      const stat = await fs.promises.stat(tempOutput);
-      res.setHeader("Content-Type", "video/mp4");
+      console.log(`[FFmpeg] Trimming & Rendering 9:16 clip (${safeSeek}s -> ${safeDuration}s) to ${savedOutput}...`);
+      await execFileAsync("ffmpeg", ffmpegArgs, { maxBuffer: 100 * 1024 * 1024 });
+
+      const stat = await fs.promises.stat(savedOutput);
+      const mimeType = targetFormat === "gif" ? "image/gif" : targetFormat === "webm" ? "video/webm" : "video/mp4";
+      const downloadUrl = `/api/download-clip?id=${uniqueId}&filename=${encodeURIComponent(cleanFilename)}.${targetFormat}`;
+
+      res.setHeader("Content-Type", mimeType);
       res.setHeader("Content-Length", stat.size);
       res.setHeader(
         "Content-Disposition",
         `attachment; filename="${cleanFilename}.${targetFormat}"`
       );
+      res.setHeader("X-Clip-Id", uniqueId);
+      res.setHeader("X-Clip-Url", downloadUrl);
+      res.setHeader("Access-Control-Expose-Headers", "X-Clip-Id, X-Clip-Url, Content-Disposition");
 
-      const stream = fs.createReadStream(tempOutput);
+      const stream = fs.createReadStream(savedOutput);
       stream.pipe(res);
 
       stream.on("close", async () => {
         try {
           await fs.promises.unlink(tempInput).catch(() => {});
-          await fs.promises.unlink(tempOutput).catch(() => {});
         } catch {}
       });
     } catch (err: any) {
       console.error("[FFmpeg] Render clip file error:", err?.message || err);
       try {
         await fs.promises.unlink(tempInput).catch(() => {});
-        await fs.promises.unlink(tempOutput).catch(() => {});
+        await fs.promises.unlink(savedOutput).catch(() => {});
       } catch {}
       res.status(500).json({ error: "Échec du découpage vidéo FFmpeg: " + (err?.message || "Erreur interne") });
     }
   }
 );
+
+// High-speed universal 9:16 clip rendering endpoint (handles YouTube clip extraction & AI Motion Graphics)
+app.all("/api/render-clip", async (req, res) => {
+  const params: Record<string, any> =
+    req.method === "POST" && req.body && typeof req.body === "object"
+      ? { ...req.query, ...req.body }
+      : req.query;
+
+  const rawFormat = ((params.format as string) || "mp4").toLowerCase();
+  const targetFormat = rawFormat === "gif" ? "gif" : rawFormat === "webm" ? "webm" : "mp4";
+  const rawFilename = (params.filename as string) || `clip-${Date.now()}`;
+  const cleanFilename = rawFilename.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+
+  const videoId = (params.videoId as string) || "";
+  const videoUrl = (params.videoUrl as string) || "";
+  const clipTitle = (params.clipTitle as string) || "MOMENT FORT VIRAL";
+  const hookText = (params.hookText as string) || clipTitle || "ATTENDS LA FIN... C'EST PAS POSSIBLE 😱";
+  const channelName = (params.channelName as string) || "Créateur";
+  const thumbnailUrl = (params.thumbnailUrl as string) || "";
+  const subtitleStyle = ((params.subtitleStyle as string) || "hormozi").toLowerCase();
+  const rawStartTime = params.startTime as string;
+  const rawDuration = params.duration as string;
+  const startSeconds = parseTimecodeToSeconds(rawStartTime);
+  const duration = Math.min(60, Math.max(3, parseFloat(rawDuration) || 10));
+
+  const uniqueId = crypto.randomBytes(8).toString("hex");
+  const tempFilesToClean: string[] = [];
+
+  const cleanup = async () => {
+    for (const f of tempFilesToClean) {
+      try {
+        await fs.promises.unlink(f).catch(() => {});
+      } catch {}
+    }
+  };
+
+  try {
+    const savedOutput = path.join(EXPORT_CLIPS_DIR, `${uniqueId}.${targetFormat}`);
+
+    // Step 1: Check if source video extraction is possible
+    let downloadedVideo = false;
+    const isRealYouTube =
+      (videoId && /^[a-zA-Z0-9_-]{11}$/.test(videoId) && !videoId.startsWith("v_") && !videoId.startsWith("b_")) ||
+      (videoUrl && (videoUrl.includes("youtube.com") || videoUrl.includes("youtu.be")));
+
+    const youtubeTarget = videoUrl || (isRealYouTube ? `https://www.youtube.com/watch?v=${videoId}` : "");
+
+    // Check if YouTube cookies are configured for authenticated cloud downloads
+    let youtubeCookieFile: string | null = null;
+    if (process.env.YOUTUBE_COOKIES_PATH && fs.existsSync(process.env.YOUTUBE_COOKIES_PATH)) {
+      youtubeCookieFile = process.env.YOUTUBE_COOKIES_PATH;
+    } else if (fs.existsSync(path.join(process.cwd(), "cookies.txt"))) {
+      youtubeCookieFile = path.join(process.cwd(), "cookies.txt");
+    } else if (process.env.YOUTUBE_COOKIES) {
+      const cookiePath = path.join(os.tmpdir(), `yt_cookie_${uniqueId}.txt`);
+      try {
+        await fs.promises.writeFile(cookiePath, process.env.YOUTUBE_COOKIES, "utf8");
+        youtubeCookieFile = cookiePath;
+        tempFilesToClean.push(cookiePath);
+      } catch {}
+    }
+
+    // Only attempt yt-dlp if it's either a non-YouTube direct URL OR we have authenticated cookies.
+    // YouTube blocks unauthenticated datacenter/cloud IP ranges by design ("Sign in to confirm you're not a bot").
+    const shouldAttemptExtraction =
+      Boolean(youtubeTarget) && (!isRealYouTube || Boolean(youtubeCookieFile));
+
+    if (shouldAttemptExtraction) {
+      const tempDownloaded = path.join(os.tmpdir(), `yt_${uniqueId}.mp4`);
+      tempFilesToClean.push(tempDownloaded);
+
+      try {
+        console.log(`[ClipRender] Attempting video extraction for ${youtubeTarget} (${startSeconds}s -> ${duration}s)...`);
+        const startFormatted = String(Math.floor(startSeconds));
+        const endFormatted = String(Math.floor(startSeconds + duration));
+
+        const ytdlpArgs = [
+          "--download-sections",
+          `*${startFormatted}-${endFormatted}`,
+          "--force-keyframes-at-cuts",
+          "--socket-timeout",
+          "4",
+          "-f",
+          "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+          "--merge-output-format",
+          "mp4",
+          ...(youtubeCookieFile ? ["--cookies", youtubeCookieFile] : []),
+          "-o",
+          tempDownloaded,
+          youtubeTarget,
+        ];
+
+        await Promise.race([
+          execFileAsync("yt-dlp", ytdlpArgs),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Extraction timeout")), 4000)),
+        ]);
+
+        if (fs.existsSync(tempDownloaded) && (await fs.promises.stat(tempDownloaded)).size > 1000) {
+          downloadedVideo = true;
+          console.log(`[ClipRender] Video extracted successfully! Formatting to 9:16...`);
+
+          let ffmpegArgs: string[] = [];
+          if (targetFormat === "gif") {
+            ffmpegArgs = [
+              "-y",
+              "-i",
+              tempDownloaded,
+              "-t",
+              String(duration),
+              "-filter_complex",
+              "[0:v]scale=540:960:force_original_aspect_ratio=increase,crop=540:960,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer",
+              savedOutput,
+            ];
+          } else {
+            ffmpegArgs = [
+              "-y",
+              "-i",
+              tempDownloaded,
+              "-t",
+              String(duration),
+              "-filter_complex",
+              "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];[0:v]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]",
+              "-map",
+              "[v]",
+              "-map",
+              "0:a?",
+              "-c:v",
+              targetFormat === "webm" ? "libvpx-vp9" : "libx264",
+              ...(targetFormat === "webm"
+                ? ["-crf", "30", "-b:v", "0", "-c:a", "libopus"]
+                : [
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "22",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                  ]),
+              savedOutput,
+            ];
+          }
+
+          await execFileAsync("ffmpeg", ffmpegArgs, { maxBuffer: 100 * 1024 * 1024 });
+        }
+      } catch (err: any) {
+        console.log("[ClipRender] Extraction skipped or unavailable, proceeding with Motion Graphic rendering.");
+      }
+    } else if (isRealYouTube) {
+      console.log("[ClipRender] YouTube source requested without server cookies; generating 9:16 Motion Graphic clip.");
+    }
+
+    // Step 2: High-Quality 9:16 Motion Graphic Generation with FFmpeg
+    if (!downloadedVideo) {
+      console.log(`[ClipRender] Generating 9:16 Motion Graphic clip (${duration}s, style=${subtitleStyle})...`);
+
+      const hookFile = path.join(os.tmpdir(), `hook_${uniqueId}.txt`);
+      tempFilesToClean.push(hookFile);
+      const cleanHook = hookText.replace(/[\r\n\t]/g, " ").slice(0, 90);
+      await fs.promises.writeFile(hookFile, cleanHook, "utf8");
+
+      const subFile = path.join(os.tmpdir(), `sub_${uniqueId}.txt`);
+      tempFilesToClean.push(subFile);
+      const cleanSub = clipTitle.replace(/[\r\n\t]/g, " ").slice(0, 80);
+      await fs.promises.writeFile(subFile, cleanSub, "utf8");
+
+      const channelFile = path.join(os.tmpdir(), `chan_${uniqueId}.txt`);
+      tempFilesToClean.push(channelFile);
+      await fs.promises.writeFile(channelFile, `@${channelName} • ClipViral AI`, "utf8");
+
+      let hasThumbnail = false;
+      const thumbFile = path.join(os.tmpdir(), `thumb_${uniqueId}.jpg`);
+      tempFilesToClean.push(thumbFile);
+
+      if (thumbnailUrl && thumbnailUrl.startsWith("http")) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 3000);
+          const thumbRes = await fetch(thumbnailUrl, { signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (thumbRes.ok) {
+            const buf = Buffer.from(await thumbRes.arrayBuffer());
+            if (buf.length > 500) {
+              await fs.promises.writeFile(thumbFile, buf);
+              hasThumbnail = true;
+            }
+          }
+        } catch {}
+      }
+
+      const fontPath = "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf";
+      const hasFont = fs.existsSync(fontPath);
+      const fontParam = hasFont ? `:fontfile=${fontPath}` : "";
+
+      let subColor = "yellow";
+      let subBox = "black@0.85";
+      let subBorder = "20";
+      let subSize = "54";
+
+      if (subtitleStyle === "cyber") {
+        subColor = "0x00F0FF";
+        subBox = "0x050515@0.9";
+        subBorder = "18";
+        subSize = "50";
+      } else if (subtitleStyle === "mrbeast") {
+        subColor = "white";
+        subBox = "0xDC2626@0.9";
+        subBorder = "22";
+        subSize = "56";
+      } else if (subtitleStyle === "minimal") {
+        subColor = "white";
+        subBox = "black@0.6";
+        subBorder = "14";
+        subSize = "46";
+      }
+
+      const ffmpegArgs: string[] = ["-y"];
+
+      if (hasThumbnail) {
+        ffmpegArgs.push("-loop", "1", "-t", String(duration), "-i", thumbFile);
+      } else {
+        ffmpegArgs.push("-f", "lavfi", "-i", `color=c=0x080811:size=1080x1920:rate=30:duration=${duration}`);
+      }
+
+      ffmpegArgs.push(
+        "-f",
+        "lavfi",
+        "-i",
+        `aevalsrc=sin(2*PI*130*t)*0.22*lte(mod(t\\,0.5)\\,0.08)+sin(2*PI*260*t)*0.12*lte(mod(t\\,0.25)\\,0.04)+sin(2*PI*65*t)*0.28*lte(mod(t\\,1)\\,0.2):s=44100:d=${duration}`
+      );
+
+      let filterComplex = "";
+      if (hasThumbnail) {
+        filterComplex = `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];[0:v]scale=960:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[base];`;
+      } else {
+        filterComplex = `[0:v]null[base];`;
+      }
+
+      filterComplex += `[base]drawtext=textfile='${hookFile}'${fontParam}:fontcolor=white:fontsize=46:box=1:boxcolor=black@0.75:boxborderw=16:x=(w-text_w)/2:y=280,`;
+      filterComplex += `drawtext=textfile='${subFile}'${fontParam}:fontcolor=${subColor}:fontsize=${subSize}:box=1:boxcolor=${subBox}:boxborderw=${subBorder}:x=(w-text_w)/2:y=1380,`;
+      filterComplex += `drawtext=textfile='${channelFile}'${fontParam}:fontcolor=0x94A3B8:fontsize=32:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=1800[v]`;
+
+      ffmpegArgs.push("-filter_complex", filterComplex);
+      ffmpegArgs.push("-map", "[v]", "-map", "1:a");
+
+      if (targetFormat === "gif") {
+        ffmpegArgs.push("-c:v", "gif", savedOutput);
+      } else if (targetFormat === "webm") {
+        ffmpegArgs.push("-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0", "-c:a", "libopus", savedOutput);
+      } else {
+        ffmpegArgs.push(
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-crf",
+          "22",
+          "-pix_fmt",
+          "yuv420p",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "192k",
+          "-movflags",
+          "+faststart",
+          savedOutput
+        );
+      }
+
+      await execFileAsync("ffmpeg", ffmpegArgs, { maxBuffer: 100 * 1024 * 1024 });
+    }
+
+    const stat = await fs.promises.stat(savedOutput);
+    const contentType =
+      targetFormat === "gif" ? "image/gif" : targetFormat === "webm" ? "video/webm" : "video/mp4";
+    const downloadUrl = `/api/download-clip?id=${uniqueId}&filename=${encodeURIComponent(cleanFilename)}.${targetFormat}`;
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Length", stat.size);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${cleanFilename}.${targetFormat}"`
+    );
+    res.setHeader("X-Clip-Id", uniqueId);
+    res.setHeader("X-Clip-Url", downloadUrl);
+    res.setHeader("Access-Control-Expose-Headers", "X-Clip-Id, X-Clip-Url, Content-Disposition");
+
+    const stream = fs.createReadStream(savedOutput);
+    stream.pipe(res);
+
+    stream.on("close", cleanup);
+    stream.on("error", cleanup);
+  } catch (err: any) {
+    console.error("[ClipRender] Error rendering video:", err?.message || err);
+    await cleanup();
+    res.status(500).json({
+      error: "Erreur lors de la génération de la vidéo: " + (err?.message || "Erreur interne"),
+    });
+  }
+});
 
 async function startServer() {
   // Vite middleware for development

@@ -23,6 +23,7 @@ import {
   Terminal,
   Info,
   AlertCircle,
+  Link as LinkIcon,
 } from "lucide-react";
 import { RemotionClipComposition } from "./RemotionClipComposition";
 import { ViralClip, VideoItem } from "../types";
@@ -75,6 +76,42 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedCaption, setCopiedCaption] = useState(false);
   const [downloadReadyUrl, setDownloadReadyUrl] = useState<string | null>(null);
+  const [serverDownloadUrl, setServerDownloadUrl] = useState<string | null>(null);
+  const [exportedFileName, setExportedFileName] = useState<string>("");
+  const [copiedClipLink, setCopiedClipLink] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  // Robust helper to trigger immediate browser downloads
+  const triggerDownload = (blobUrl: string, serverUrl?: string | null, filename?: string) => {
+    const targetUrl = serverUrl || blobUrl;
+    const name = filename || exportedFileName || `clip-${Date.now()}.${lastExportedFormat}`;
+    try {
+      const a = document.createElement("a");
+      a.href = targetUrl;
+      a.download = name;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        try {
+          document.body.removeChild(a);
+        } catch {}
+      }, 300);
+    } catch (err) {
+      console.warn("Auto-download triggered, link available in UI:", err);
+    }
+  };
+
+  const copyClipLink = () => {
+    const directUrl = serverDownloadUrl
+      ? `${window.location.origin}${serverDownloadUrl}`
+      : downloadReadyUrl || "";
+    if (!directUrl) return;
+    navigator.clipboard.writeText(directUrl);
+    setCopiedClipLink(true);
+    setTimeout(() => setCopiedClipLink(false), 2500);
+  };
 
   if (!isOpen || !clip || !video) return null;
 
@@ -154,25 +191,30 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
             }
           );
 
-          if (!convertRes.ok) throw new Error("Conversion échouée");
+          if (!convertRes.ok) {
+            const errData = await convertRes.json().catch(() => ({}));
+            throw new Error(errData.error || `Erreur serveur ${convertRes.status}`);
+          }
+
+          const serverUrl = convertRes.headers.get("X-Clip-Url");
+          const fullFilename = `${cleanName}.mp4`;
+          setExportedFileName(fullFilename);
+          if (serverUrl) setServerDownloadUrl(serverUrl);
 
           const convertedBlob = await convertRes.blob();
           const convertedUrl = URL.createObjectURL(convertedBlob);
           setDownloadReadyUrl(convertedUrl);
           setExportProgress(100);
-          setExportStatusText(`Extrait enregistré (${(convertedBlob.size / (1024 * 1024)).toFixed(1)} Mo) téléchargé !`);
+          setExportStatusText(`Extrait enregistré (${(convertedBlob.size / (1024 * 1024)).toFixed(1)} Mo) prêt !`);
           setIsExporting(false);
+          setExportError(null);
 
-          const a = document.createElement("a");
-          a.href = convertedUrl;
-          a.download = `${cleanName}.mp4`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-        } catch (convErr) {
+          triggerDownload(convertedUrl, serverUrl, fullFilename);
+        } catch (convErr: any) {
           console.error("Conversion error:", convErr);
           setIsExporting(false);
-          setExportStatusText("Erreur lors de la conversion de la capture.");
+          setExportError(convErr?.message || "Erreur lors de la conversion de la capture.");
+          setExportStatusText("Échec conversion capture.");
         }
       };
 
@@ -197,7 +239,9 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
   const handleExportVideo = async () => {
     setIsExporting(true);
     setExportProgress(10);
+    setExportError(null);
     setDownloadReadyUrl(null);
+    setServerDownloadUrl(null);
     const targetFormat = exportFormat;
     setLastExportedFormat(targetFormat);
 
@@ -228,32 +272,86 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
         setExportProgress(80);
         setExportStatusText(`Finalisation et encodage 9:16 H.264 / AAC (.${targetFormat.toUpperCase()})...`);
 
+        const serverUrl = res.headers.get("X-Clip-Url");
+        const fullFilename = `${cleanName}.${targetFormat}`;
+        setExportedFileName(fullFilename);
+        if (serverUrl) setServerDownloadUrl(serverUrl);
+
         const convertedBlob = await res.blob();
         const convertedUrl = URL.createObjectURL(convertedBlob);
         setDownloadReadyUrl(convertedUrl);
         setExportProgress(100);
         const sizeMb = (convertedBlob.size / (1024 * 1024)).toFixed(1);
-        setExportStatusText(`Clip réel généré et téléchargé avec succès (${sizeMb} Mo) !`);
+        setExportStatusText(`Clip réel généré et prêt (${sizeMb} Mo) !`);
         setIsExporting(false);
+        setExportError(null);
 
-        const a = document.createElement("a");
-        a.href = convertedUrl;
-        a.download = `${cleanName}.${targetFormat}`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        triggerDownload(convertedUrl, serverUrl, fullFilename);
         return;
       } catch (err: any) {
         console.error("Render source file error:", err);
         setIsExporting(false);
         setExportProgress(0);
+        setExportError(err?.message || "Échec du découpage du fichier");
         setExportStatusText("Erreur: " + (err?.message || "Échec du découpage"));
         return;
       }
     }
 
-    // MODE 2: MOTION GRAPHIC RENDER (Full duration with Web Audio beat and continuous animation)
-    setExportStatusText("Génération de l'animation Motion Graphic 9:16...");
+    // MODE 2: HIGH-PERFORMANCE SERVER-SIDE 9:16 RENDERING (FFmpeg & yt-dlp)
+    try {
+      setExportStatusText("Initialisation du rendu 9:16 TikTok / Reels...");
+      setExportProgress(30);
+
+      const renderRes = await fetch("/api/render-clip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoId: video.id,
+          videoUrl: video.url || (video.id ? `https://www.youtube.com/watch?v=${video.id}` : ""),
+          startTime: clip.startTime,
+          endTime: clip.endTime,
+          duration: motionDuration,
+          clipTitle: clip.clipTitle,
+          hookText: activeHookText,
+          channelName,
+          thumbnailUrl: video.thumbnail,
+          subtitleStyle,
+          layoutMode,
+          format: targetFormat,
+          filename: cleanName,
+        }),
+      });
+
+      if (renderRes.ok) {
+        setExportProgress(85);
+        setExportStatusText(`Finalisation du fichier .${targetFormat.toUpperCase()}...`);
+        const serverUrl = renderRes.headers.get("X-Clip-Url");
+        const fullFilename = `${cleanName}.${targetFormat}`;
+        setExportedFileName(fullFilename);
+        if (serverUrl) setServerDownloadUrl(serverUrl);
+
+        const blob = await renderRes.blob();
+        if (blob.size > 500) {
+          const url = URL.createObjectURL(blob);
+          setDownloadReadyUrl(url);
+          setExportProgress(100);
+          const sizeMb = (blob.size / (1024 * 1024)).toFixed(1);
+          setExportStatusText(`Clip exporté avec succès (${sizeMb} Mo, ${motionDuration}s) !`);
+          setIsExporting(false);
+          setExportError(null);
+
+          triggerDownload(url, serverUrl, fullFilename);
+          return;
+        }
+      }
+      console.warn("Rendu serveur retourné non-ok ou vide, activation du fallback canvas local...");
+    } catch (serverErr) {
+      console.warn("Erreur pipeline serveur, activation du fallback canvas local:", serverErr);
+    }
+
+    // MODE 3: LOCAL BROWSER MOTION GRAPHIC RENDER FALLBACK
+    setExportStatusText("Génération locale de l'animation Motion Graphic 9:16...");
     try {
       const canvas = document.createElement("canvas");
       canvas.width = 1080;
@@ -286,6 +384,9 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioContextClass) {
           const audioCtx = new AudioContextClass();
+          if (audioCtx.state === "suspended") {
+            await audioCtx.resume().catch(() => {});
+          }
           audioDest = audioCtx.createMediaStreamDestination();
           const osc = audioCtx.createOscillator();
           const gain = audioCtx.createGain();
@@ -496,12 +597,16 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
         }
       };
 
-      mediaRecorder.start();
+      mediaRecorder.start(250);
 
       const renderInterval = setInterval(() => {
         if (currentFrame >= renderTotalFrames) {
           clearInterval(renderInterval);
-          mediaRecorder?.stop();
+          try {
+            if (mediaRecorder && mediaRecorder.state !== "inactive") {
+              mediaRecorder.stop();
+            }
+          } catch {}
         } else {
           drawFrame(currentFrame);
           currentFrame++;
@@ -519,18 +624,16 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
         };
       }).then(async (recordedBlob) => {
         if (targetFormat === "webm") {
+          const fullFilename = `${cleanName}.webm`;
+          setExportedFileName(fullFilename);
           const url = URL.createObjectURL(recordedBlob);
           setDownloadReadyUrl(url);
           setExportProgress(100);
           setExportStatusText("Fichier .webm généré avec succès !");
           setIsExporting(false);
+          setExportError(null);
 
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `${cleanName}.webm`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
+          triggerDownload(url, null, fullFilename);
         } else {
           setExportProgress(75);
           setExportStatusText(
@@ -549,36 +652,38 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
               }
             );
 
-            if (!convertRes.ok) throw new Error(`Le serveur a répondu avec ${convertRes.status}`);
+            if (!convertRes.ok) {
+              const errData = await convertRes.json().catch(() => ({}));
+              throw new Error(errData.error || `Le serveur a répondu avec ${convertRes.status}`);
+            }
+
+            const serverUrl = convertRes.headers.get("X-Clip-Url");
+            const fullFilename = `${cleanName}.${targetFormat}`;
+            setExportedFileName(fullFilename);
+            if (serverUrl) setServerDownloadUrl(serverUrl);
 
             const convertedBlob = await convertRes.blob();
             const convertedUrl = URL.createObjectURL(convertedBlob);
             setDownloadReadyUrl(convertedUrl);
             setExportProgress(100);
             const sizeMb = (convertedBlob.size / (1024 * 1024)).toFixed(1);
-            setExportStatusText(`Vidéo complète téléchargée (${sizeMb} Mo, ${motionDuration}s) !`);
+            setExportStatusText(`Vidéo Motion Graphic exportée (${sizeMb} Mo) !`);
             setIsExporting(false);
+            setExportError(null);
 
-            const a = document.createElement("a");
-            a.href = convertedUrl;
-            a.download = `${cleanName}.${targetFormat}`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-          } catch (convertErr) {
+            triggerDownload(convertedUrl, serverUrl, fullFilename);
+          } catch (convertErr: any) {
             console.warn("Conversion serveur fallback:", convertErr);
             const fallbackUrl = URL.createObjectURL(recordedBlob);
+            const fullFilename = `${cleanName}.webm`;
+            setExportedFileName(fullFilename);
             setDownloadReadyUrl(fallbackUrl);
             setExportProgress(100);
             setExportStatusText("Téléchargé au format direct (.webm)");
             setIsExporting(false);
+            setExportError(null);
 
-            const a = document.createElement("a");
-            a.href = fallbackUrl;
-            a.download = `${cleanName}.webm`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+            triggerDownload(fallbackUrl, null, fullFilename);
           }
         }
       });
@@ -586,12 +691,14 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
       console.error("Export error:", err);
       setIsExporting(false);
       setExportProgress(0);
-      setExportStatusText("Erreur: " + (err?.message || "Échec export"));
+      setExportError(err?.message || "Échec export");
+      setExportStatusText("Erreur lors de l'exportation.");
     }
   };
 
   const copyYtDlpCommand = () => {
-    const cmd = `yt-dlp --download-sections "*${clip.startTime}-${clip.endTime}" -f mp4 "${video.url}" -o "clip_${clip.id}.mp4"`;
+    const videoUrl = video.url || (video.id ? `https://www.youtube.com/watch?v=${video.id}` : "");
+    const cmd = `yt-dlp --download-sections "*${clip.startTime}-${clip.endTime}" -f mp4 "${videoUrl}" -o "clip_${clip.id}.mp4"`;
     navigator.clipboard.writeText(cmd);
     setCopiedYtDlp(true);
     setTimeout(() => setCopiedYtDlp(false), 2500);
@@ -1126,20 +1233,92 @@ export const RemotionRoot = () => {
 
             {/* ACTION BUTTONS & EXPORT PIPELINE */}
             <div className="mt-auto pt-2 flex flex-col gap-3">
-              {/* SUCCESS DOWNLOAD BANNER */}
+              {/* SUCCESS DOWNLOAD & PREVIEW PANEL */}
               {downloadReadyUrl && !isExporting && (
-                <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-xs text-emerald-300">
-                    <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span>Clip .{lastExportedFormat.toUpperCase()} téléchargé avec succès !</span>
+                <div className="p-3.5 rounded-xl bg-slate-900/95 border-2 border-emerald-500/40 shadow-xl flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs font-bold text-emerald-300">
+                      <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping shrink-0" />
+                      <span>Vidéo 9:16 prête ! (.{lastExportedFormat.toUpperCase()})</span>
+                    </div>
+                    {exportedFileName && (
+                      <span className="text-[10px] font-mono text-slate-400 truncate max-w-[200px]">
+                        {exportedFileName}
+                      </span>
+                    )}
                   </div>
-                  <a
-                    href={downloadReadyUrl}
-                    download={`remotion-clip-${clip.id}.${lastExportedFormat}`}
-                    className="text-xs font-bold text-emerald-400 hover:underline shrink-0"
+
+                  {/* Inline Video / GIF Preview */}
+                  <div className="relative rounded-lg overflow-hidden bg-black/80 aspect-[9/16] max-h-[220px] mx-auto border border-slate-800 shadow-inner flex items-center justify-center">
+                    {lastExportedFormat !== "gif" ? (
+                      <video
+                        src={serverDownloadUrl ? `${serverDownloadUrl}&inline=1` : downloadReadyUrl}
+                        controls
+                        playsInline
+                        className="w-full h-full object-contain"
+                      />
+                    ) : (
+                      <img
+                        src={serverDownloadUrl ? `${serverDownloadUrl}&inline=1` : downloadReadyUrl}
+                        alt="Aperçu GIF"
+                        className="w-full h-full object-contain"
+                      />
+                    )}
+                  </div>
+
+                  {/* Action download buttons */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
+                    <a
+                      href={serverDownloadUrl || downloadReadyUrl}
+                      download={exportedFileName || `clip-${Date.now()}.${lastExportedFormat}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow-md flex items-center justify-center gap-2 transition"
+                    >
+                      <Download className="w-4 h-4" />
+                      Télécharger ({lastExportedFormat.toUpperCase()})
+                    </a>
+
+                    <a
+                      href={serverDownloadUrl ? `${serverDownloadUrl}&inline=1` : downloadReadyUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-semibold rounded-lg border border-slate-700 flex items-center justify-center gap-2 transition"
+                    >
+                      <ExternalLink className="w-4 h-4 text-cyan-400" />
+                      Ouvrir (Nouvel Onglet)
+                    </a>
+                  </div>
+
+                  {serverDownloadUrl && (
+                    <button
+                      type="button"
+                      onClick={copyClipLink}
+                      className="text-[11px] text-slate-400 hover:text-cyan-300 flex items-center justify-center gap-1.5 transition py-0.5"
+                    >
+                      {copiedClipLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <LinkIcon className="w-3.5 h-3.5" />}
+                      {copiedClipLink ? "Lien direct copié !" : "Copier le lien direct du clip"}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* ERROR ALERT IF EXPORT FAILED */}
+              {exportError && !isExporting && (
+                <div className="p-3 rounded-xl bg-red-950/50 border border-red-500/40 text-xs text-red-300 flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-red-200">Erreur lors de l'exportation</p>
+                      <p className="text-[11px] text-red-300/80">{exportError}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setExportError(null)}
+                    className="text-red-400 hover:text-red-200 text-xs underline shrink-0"
                   >
-                    Re-télécharger
-                  </a>
+                    Fermer
+                  </button>
                 </div>
               )}
 
