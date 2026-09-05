@@ -1259,6 +1259,11 @@ app.post(
     const cleanFilename = rawFilename.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
     const rawStartTime = req.query.startTime as string;
     const requestedDuration = Math.min(60, Math.max(3, parseFloat((req.query.duration as string) || "30")));
+    // Subtitles passed as JSON query param: [{start,end,text}[]]
+    let subtitlesData: {start:number,end:number,text:string}[] = [];
+    try {
+      if (req.query.subtitles) subtitlesData = JSON.parse(req.query.subtitles as string);
+    } catch { /* ignore */ }
 
     const videoBuffer = req.body;
     if (!videoBuffer || !Buffer.isBuffer(videoBuffer) || videoBuffer.length < 100) {
@@ -1305,7 +1310,9 @@ app.post(
           "-t",
           String(safeDuration),
           "-filter_complex",
-          "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];[0:v]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]",
+          assFile
+            ? `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];[0:v]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,ass='${assFile.replace(/\\/g,"\\\\").replace(/'/g,"\\'")}':fontsdir=/usr/share/fonts[v]`
+            : "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];[0:v]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]",
           "-map",
           "[v]",
           "-map",
@@ -1333,6 +1340,28 @@ app.post(
       }
 
       console.log(`[FFmpeg] Trimming & Rendering 9:16 clip (${safeSeek}s -> ${safeDuration}s) to ${savedOutput}...`);
+
+      // Generate ASS subtitle file if subtitles provided
+      let assFile: string | null = null;
+      if (subtitlesData.length > 0 && targetFormat !== "gif") {
+        assFile = path.join(os.tmpdir(), `subs_${uniqueId}.ass`);
+        const fontPath = "/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf";
+        const assHeader = `[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,DejaVu Sans,72,&H00FFFFFF,&H00000000,&H90000000,1,0,0,0,100,100,0,0,1,5,2,2,60,60,280,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+        const toAssTime = (s: number) => {
+          const base = Math.max(0, s - safeSeek);
+          const h = Math.floor(base / 3600);
+          const m = Math.floor((base % 3600) / 60);
+          const sec = Math.floor(base % 60);
+          const cs = Math.round((base - Math.floor(base)) * 100);
+          return `${h}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}.${String(cs).padStart(2,"0")}`;
+        };
+        const lines = subtitlesData
+          .filter(s => s.end > safeSeek && s.start < safeSeek + safeDuration)
+          .map(s => `Dialogue: 0,${toAssTime(s.start)},${toAssTime(s.end)},Default,,0,0,0,,${s.text.replace(/\n/g," ")}`)
+          .join("\n");
+        await fs.promises.writeFile(assFile, assHeader + lines, "utf8");
+      }
+
       await execFileAsync("ffmpeg", ffmpegArgs, { maxBuffer: 100 * 1024 * 1024 });
 
       const stat = await fs.promises.stat(savedOutput);

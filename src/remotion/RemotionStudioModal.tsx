@@ -142,6 +142,20 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
           } catch {
             // Non-fatal: export will fall back to MODE 2
           }
+          // Auto-load subtitles in parallel
+          try {
+            const startSecs = clip.startSeconds || 0;
+            const endSecs = clip.endSeconds || startSecs + (clip.durationSeconds || 30);
+            const subsResp = await fetch(
+              `/api/transcribe?videoId=${encodeURIComponent(video.id)}&startSeconds=${startSecs}&endSeconds=${endSecs}`
+            );
+            const subsData = await subsResp.json();
+            if (subsData.segments && subsData.segments.length > 0) {
+              setViadeoSubtitles(subsData.segments);
+            }
+          } catch {
+            // Non-fatal: subtitles optional
+          }
         }
       } catch (err: any) {
         if (err?.name !== "AbortError") {
@@ -328,8 +342,12 @@ export const RemotionStudioModal: React.FC<RemotionStudioModalProps> = ({
         setExportStatusText("Téléversement du fichier source vers FFmpeg...");
         setExportProgress(25);
 
+        const subsParam = viadeoSubtitles.length > 0
+          ? `&subtitles=${encodeURIComponent(JSON.stringify(viadeoSubtitles))}`
+          : "";
+
         const res = await fetch(
-          `/api/render-clip-file?startTime=${encodeURIComponent(clip.startTime)}&duration=${clip.durationSeconds}&format=${targetFormat}&filename=${encodeURIComponent(cleanName)}`,
+          `/api/render-clip-file?startTime=${encodeURIComponent(clip.startTime)}&duration=${clip.durationSeconds}&format=${targetFormat}&filename=${encodeURIComponent(cleanName)}${subsParam}`,
           {
             method: "POST",
             headers: {
