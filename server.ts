@@ -1031,38 +1031,17 @@ app.get("/api/fetch-video", async (req, res) => {
   const startFormatted = String(Math.floor(Math.max(0, startSec)));
   const endFormatted = String(Math.ceil(endSec));
 
-  const ytdlpArgs = [
-    "--download-sections",
-    `*${startFormatted}-${endFormatted}`,
-    "--force-keyframes-at-cuts",
-    "--socket-timeout",
-    "8",
-    "--extractor-args", "youtube:player_client=tv,web",
-    "--user-agent", "Mozilla/5.0 (TV; SmartTV) AppleWebKit/537.36",
-    "--no-check-certificates",
-    "--no-playlist",
-    "-f",
-    "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-    "--merge-output-format",
-    "mp4",
-    ...(youtubeCookieFile ? ["--cookies", youtubeCookieFile] : []),
-    "-o",
-    outputPath,
-    youtubeUrl,
-  ];
-
   try {
     console.log(`[FetchVideo] Downloading section ${startFormatted}s-${endFormatted}s of ${videoId}...`);
 
-    // Attempt 1: bestvideo+bestaudio
+    // Attempt with multiple formats; ios player_client returns direct URLs without JS sig solving
     let fetchOk = false;
     const attempt = async (extraArgs: string[]) => {
       const args = [
         "--download-sections", `*${startFormatted}-${endFormatted}`,
         "--force-keyframes-at-cuts",
         "--socket-timeout", "8",
-        "--extractor-args", "youtube:player_client=tv,web",
-        "--user-agent", "Mozilla/5.0 (TV; SmartTV) AppleWebKit/537.36",
+        "--extractor-args", "youtube:player_client=ios,web",
         "--no-check-certificates",
         "--no-playlist",
         ...extraArgs,
@@ -1076,8 +1055,8 @@ app.get("/api/fetch-video", async (req, res) => {
 
     const formats = [
       ["-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]"],
-      ["-f", "best"],
-      ["-f", "worst"],
+      ["-f", "b"],
+      ["-f", "w"],
     ];
 
     for (const fmtArgs of formats) {
@@ -1488,8 +1467,7 @@ app.all("/api/render-clip", async (req, res) => {
             "--download-sections", `*${startFormatted}-${endFormatted}`,
             "--force-keyframes-at-cuts",
             "--socket-timeout", "4",
-            "--extractor-args", "youtube:player_client=tv,web",
-            "--user-agent", "Mozilla/5.0 (TV; SmartTV) AppleWebKit/537.36",
+            "--extractor-args", "youtube:player_client=ios,web",
             "--no-check-certificates",
             "--no-playlist",
             ...fmtArgs,
