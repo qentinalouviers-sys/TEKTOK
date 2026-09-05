@@ -910,7 +910,7 @@ export const RemotionRoot = () => {
                   layoutMode,
                   sourceVideoUrl: sourceVideoUrl || undefined,
                   showViadeoMode,
-                  subtitles: viadeoSubtitles,
+                  subtitles: [],  // subtitles burned by FFmpeg on export, not shown in preview
                   punches: [],
                   brollSegments,
                   voiceoverUrl: viadeoVoiceoverUrl,
@@ -924,6 +924,13 @@ export const RemotionRoot = () => {
                 {durationInSeconds}s ({durationInFrames} frames)
               </span>
             </div>
+
+            {viadeoSubtitles.length > 0 && (
+              <div className="mt-2 w-[280px] sm:w-[320px] px-3 py-1.5 rounded-lg bg-amber-950/40 border border-amber-500/30 text-[11px] text-amber-300 flex items-center gap-2">
+                <span>📝</span>
+                <span>{viadeoSubtitles.length} sous-titres — incrustés dans le MP4 à l'export (non visibles ici)</span>
+              </div>
+            )}
 
             {sourceVideoFile && (
               <div className="mt-3 w-[280px] sm:w-[320px] p-2 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-[11px] text-emerald-300 flex items-center justify-between">
