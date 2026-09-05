@@ -2026,6 +2026,53 @@ app.post("/api/broll", async (req, res) => {
   }
 });
 
+// ===== AUTO-SOCIAL QUEUE PUSH =====
+// Envoie un clip exporté dans la queue AutoSocial locale pour publication automatique
+const AUTOSOCIAL_BASE = process.env.AUTOSOCIAL_DIR || path.join(process.cwd(), "..", "autosocial");
+
+app.post("/api/publish-to-queue", async (req, res) => {
+  try {
+    const { clipId, filename, caption, platforms } = req.body as {
+      clipId: string;
+      filename: string;
+      caption?: string;
+      platforms?: string[]; // ["tiktok","instagram","youtube"]
+    };
+    if (!clipId) return res.status(400).json({ error: "clipId requis" });
+
+    // Trouver le fichier source dans EXPORT_CLIPS_DIR
+    const files = await fs.promises.readdir(EXPORT_CLIPS_DIR);
+    const targetFile = files.find(f => f.startsWith(clipId) || f.includes(clipId));
+    if (!targetFile) return res.status(404).json({ error: "Clip introuvable ou expiré" });
+
+    const sourcePath = path.join(EXPORT_CLIPS_DIR, targetFile);
+    const targetPlatforms = platforms && platforms.length > 0 ? platforms : ["tiktok", "instagram", "youtube"];
+    const cleanFilename = (filename || targetFile).replace(/[^a-zA-Z0-9_.-]/g, "_");
+
+    const pushed: string[] = [];
+    for (const platform of targetPlatforms) {
+      const queueDir = path.join(AUTOSOCIAL_BASE, "queue", "default", platform, "pending");
+      await fs.promises.mkdir(queueDir, { recursive: true });
+
+      const destVideo = path.join(queueDir, cleanFilename);
+      await fs.promises.copyFile(sourcePath, destVideo);
+
+      // Écrire la légende dans un fichier .description
+      if (caption) {
+        const captionFile = destVideo.replace(/\.[^.]+$/, ".description");
+        await fs.promises.writeFile(captionFile, caption, "utf8");
+      }
+      pushed.push(platform);
+    }
+
+    console.log(`[AutoSocial] Clip ${cleanFilename} envoyé dans la queue: ${pushed.join(", ")}`);
+    return res.json({ ok: true, pushed, file: cleanFilename });
+  } catch (err: any) {
+    console.error("[AutoSocial] Error:", err?.message);
+    res.status(500).json({ error: err?.message || "Erreur push queue" });
+  }
+});
+
 async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

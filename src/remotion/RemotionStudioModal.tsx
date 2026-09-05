@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { RemotionClipComposition } from "./RemotionClipComposition";
 import { ViralClip, VideoItem } from "../types";
+import { PublishPanel } from "../components/PublishPanel";
 
 interface RemotionStudioModalProps {
   isOpen: boolean;
@@ -1678,6 +1679,13 @@ export const RemotionRoot = () => {
                       {copiedClipLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <LinkIcon className="w-3.5 h-3.5" />}
                       {copiedClipLink ? "Lien direct copié !" : "Copier le lien direct du clip"}
                     </button>
+
+                  {/* ── PUBLIER SUR LES RÉSEAUX ── */}
+                  <PublishPanel
+                    clipId={serverDownloadUrl?.match(/id=([^&]+)/)?.[1] || ""}
+                    filename={exportedFileName}
+                    caption={clip.tiktokCaption || ""}
+                  />
                   )}
                 </div>
               )}
